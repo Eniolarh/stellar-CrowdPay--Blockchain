@@ -24,8 +24,48 @@ async function logAdminAction(adminUserId, actionType, targetType, targetId, det
 }
 
 /**
- * GET /api/admin/stats
- * Get platform statistics
+ * @openapi
+ * /api/admin/stats:
+ *   get:
+ *     tags:
+ *       - Admin
+ *     summary: Get platform statistics
+ *     description: Returns aggregate platform statistics. Requires admin authentication.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Platform statistics
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 total_users:
+ *                   type: integer
+ *                 banned_users:
+ *                   type: integer
+ *                 campaign_status:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       status:
+ *                         type: string
+ *                       count:
+ *                         type: string
+ *                 deleted_campaigns:
+ *                   type: integer
+ *                 total_raised:
+ *                   type: number
+ *                 total_contributions:
+ *                   type: integer
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Admin access required
+ *       500:
+ *         description: Failed to fetch statistics
  */
 router.get('/stats', async (req, res) => {
   try {
@@ -51,8 +91,41 @@ router.get('/stats', async (req, res) => {
 });
 
 /**
- * GET /api/admin/campaigns
- * List all campaigns with filters
+ * @openapi
+ * /api/admin/campaigns:
+ *   get:
+ *     tags:
+ *       - Admin
+ *     summary: List all campaigns with filters
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *         description: Filter by campaign status
+ *       - in: query
+ *         name: include_deleted
+ *         schema:
+ *           type: string
+ *           enum: ['true', 'false']
+ *         description: Include soft-deleted campaigns when set to 'true'
+ *     responses:
+ *       200:
+ *         description: List of campaigns
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Admin access required
+ *       500:
+ *         description: Failed to fetch campaigns
  */
 router.get('/campaigns', async (req, res) => {
   try {
@@ -88,8 +161,29 @@ router.get('/campaigns', async (req, res) => {
 });
 
 /**
- * GET /api/admin/campaigns/deleted
- * List only deleted campaigns
+ * @openapi
+ * /api/admin/campaigns/deleted:
+ *   get:
+ *     tags:
+ *       - Admin
+ *     summary: List only deleted campaigns
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of soft-deleted campaigns
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Admin access required
+ *       500:
+ *         description: Failed to fetch deleted campaigns
  */
 router.get('/campaigns/deleted', async (req, res) => {
   try {
@@ -111,8 +205,52 @@ router.get('/campaigns/deleted', async (req, res) => {
 });
 
 /**
- * PATCH /api/admin/campaigns/:id/suspend
- * Suspend a campaign (prevent new contributions)
+ * @openapi
+ * /api/admin/campaigns/{id}/suspend:
+ *   patch:
+ *     tags:
+ *       - Admin
+ *     summary: Suspend a campaign
+ *     description: Suspends a campaign, preventing new contributions. Logged to the admin audit log.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Campaign ID
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               reason:
+ *                 type: string
+ *                 description: Reason for suspension
+ *     responses:
+ *       200:
+ *         description: Campaign suspended
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                 campaign:
+ *                   type: object
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Admin access required
+ *       404:
+ *         description: Campaign not found
+ *       500:
+ *         description: Failed to suspend campaign
  */
 router.patch('/campaigns/:id/suspend', async (req, res) => {
   try {
@@ -151,8 +289,44 @@ router.patch('/campaigns/:id/suspend', async (req, res) => {
 });
 
 /**
- * PATCH /api/admin/campaigns/:id/restore
- * Restore a suspended campaign to active, or restore a soft-deleted campaign
+ * @openapi
+ * /api/admin/campaigns/{id}/restore:
+ *   patch:
+ *     tags:
+ *       - Admin
+ *     summary: Restore a campaign
+ *     description: Restores a suspended campaign to active, or restores a soft-deleted campaign.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Campaign ID
+ *     responses:
+ *       200:
+ *         description: Campaign restored
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                 campaign:
+ *                   type: object
+ *       400:
+ *         description: Only suspended or deleted campaigns can be restored
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Admin access required
+ *       404:
+ *         description: Campaign not found
+ *       500:
+ *         description: Failed to restore campaign
  */
 router.patch('/campaigns/:id/restore', async (req, res) => {
   try {
@@ -211,8 +385,51 @@ router.patch('/campaigns/:id/restore', async (req, res) => {
 });
 
 /**
- * DELETE /api/admin/campaigns/:id
- * Soft-delete (archive) a campaign
+ * @openapi
+ * /api/admin/campaigns/{id}:
+ *   delete:
+ *     tags:
+ *       - Admin
+ *     summary: Soft-delete (archive) a campaign
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Campaign ID
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               reason:
+ *                 type: string
+ *                 description: Reason for deletion
+ *     responses:
+ *       200:
+ *         description: Campaign deleted
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                 campaign:
+ *                   type: object
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Admin access required
+ *       404:
+ *         description: Campaign not found
+ *       500:
+ *         description: Failed to delete campaign
  */
 router.delete('/campaigns/:id', async (req, res) => {
   try {
@@ -248,8 +465,51 @@ router.delete('/campaigns/:id', async (req, res) => {
 });
 
 /**
- * PATCH /api/admin/campaigns/:id/feature
- * Mark a campaign as featured
+ * @openapi
+ * /api/admin/campaigns/{id}/feature:
+ *   patch:
+ *     tags:
+ *       - Admin
+ *     summary: Mark a campaign as featured
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Campaign ID
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               note:
+ *                 type: string
+ *                 description: Optional note about why the campaign was featured
+ *     responses:
+ *       200:
+ *         description: Campaign featured
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                 campaign:
+ *                   type: object
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Admin access required
+ *       404:
+ *         description: Campaign not found
+ *       500:
+ *         description: Failed to feature campaign
  */
 router.patch('/campaigns/:id/feature', async (req, res) => {
   try {
@@ -286,8 +546,41 @@ router.patch('/campaigns/:id/feature', async (req, res) => {
 });
 
 /**
- * PATCH /api/admin/campaigns/:id/unfeature
- * Remove featured status from a campaign
+ * @openapi
+ * /api/admin/campaigns/{id}/unfeature:
+ *   patch:
+ *     tags:
+ *       - Admin
+ *     summary: Remove featured status from a campaign
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Campaign ID
+ *     responses:
+ *       200:
+ *         description: Campaign unfeatured
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                 campaign:
+ *                   type: object
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Admin access required
+ *       404:
+ *         description: Campaign not found
+ *       500:
+ *         description: Failed to unfeature campaign
  */
 router.patch('/campaigns/:id/unfeature', async (req, res) => {
   try {
@@ -323,8 +616,36 @@ router.patch('/campaigns/:id/unfeature', async (req, res) => {
 });
 
 /**
- * GET /api/admin/users
- * List all users with optional filtering
+ * @openapi
+ * /api/admin/users:
+ *   get:
+ *     tags:
+ *       - Admin
+ *     summary: List all users with optional filtering
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: include_banned
+ *         schema:
+ *           type: string
+ *           enum: ['true', 'false']
+ *         description: Include banned users when set to 'true'
+ *     responses:
+ *       200:
+ *         description: List of users
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Admin access required
+ *       500:
+ *         description: Failed to fetch users
  */
 router.get('/users', async (req, res) => {
   try {
@@ -353,8 +674,55 @@ router.get('/users', async (req, res) => {
 });
 
 /**
- * PATCH /api/admin/users/:id/ban
- * Ban a user
+ * @openapi
+ * /api/admin/users/{id}/ban:
+ *   patch:
+ *     tags:
+ *       - Admin
+ *     summary: Ban a user
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: User ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - reason
+ *             properties:
+ *               reason:
+ *                 type: string
+ *                 description: Reason for banning the user
+ *     responses:
+ *       200:
+ *         description: User banned
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                 user:
+ *                   type: object
+ *       400:
+ *         description: Reason required or user already banned
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Admin access required
+ *       404:
+ *         description: User not found
+ *       500:
+ *         description: Failed to ban user
  */
 router.patch('/users/:id/ban', async (req, res) => {
   try {
@@ -398,8 +766,43 @@ router.patch('/users/:id/ban', async (req, res) => {
 });
 
 /**
- * PATCH /api/admin/users/:id/unban
- * Unban a user
+ * @openapi
+ * /api/admin/users/{id}/unban:
+ *   patch:
+ *     tags:
+ *       - Admin
+ *     summary: Unban a user
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: User ID
+ *     responses:
+ *       200:
+ *         description: User unbanned
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                 user:
+ *                   type: object
+ *       400:
+ *         description: User is not banned
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Admin access required
+ *       404:
+ *         description: User not found
+ *       500:
+ *         description: Failed to unban user
  */
 router.patch('/users/:id/unban', async (req, res) => {
   try {
@@ -436,8 +839,55 @@ router.patch('/users/:id/unban', async (req, res) => {
 });
 
 /**
- * GET /api/admin/audit-log
- * Get admin action audit log
+ * @openapi
+ * /api/admin/audit-log:
+ *   get:
+ *     tags:
+ *       - Admin
+ *     summary: Get admin action audit log
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 100
+ *           maximum: 1000
+ *         description: Maximum number of entries to return
+ *       - in: query
+ *         name: offset
+ *         schema:
+ *           type: integer
+ *           default: 0
+ *         description: Number of entries to skip
+ *     responses:
+ *       200:
+ *         description: Audit log entries with pagination
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 actions:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                 pagination:
+ *                   type: object
+ *                   properties:
+ *                     limit:
+ *                       type: integer
+ *                     offset:
+ *                       type: integer
+ *                     total:
+ *                       type: integer
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Admin access required
+ *       500:
+ *         description: Failed to fetch audit log
  */
 router.get('/audit-log', async (req, res) => {
   try {
@@ -473,8 +923,44 @@ router.get('/audit-log', async (req, res) => {
 });
 
 /**
- * PATCH /api/admin/users/:id/promote
- * Promote a user to admin — only super-admins may do this.
+ * @openapi
+ * /api/admin/users/{id}/promote:
+ *   patch:
+ *     tags:
+ *       - Admin
+ *     summary: Promote a user to admin
+ *     description: Only super-admins may promote users.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: User ID
+ *     responses:
+ *       200:
+ *         description: User promoted to admin
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                 user:
+ *                   type: object
+ *       400:
+ *         description: User is already an admin
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Super-admin access required
+ *       404:
+ *         description: User not found
+ *       500:
+ *         description: Failed to promote user
  */
 router.patch('/users/:id/promote', requireSuperAdmin, async (req, res) => {
   try {
@@ -511,9 +997,46 @@ router.patch('/users/:id/promote', requireSuperAdmin, async (req, res) => {
 });
 
 /**
- * PATCH /api/admin/users/:id/demote
- * Demote an admin to regular user — only super-admins may do this.
- * Self-demotion is blocked. Demoting the last admin is blocked.
+ * @openapi
+ * /api/admin/users/{id}/demote:
+ *   patch:
+ *     tags:
+ *       - Admin
+ *     summary: Demote an admin to regular user
+ *     description: Only super-admins may demote admins. Self-demotion is blocked, and demoting the last admin is blocked.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: User ID
+ *     responses:
+ *       200:
+ *         description: Admin demoted to user
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                 user:
+ *                   type: object
+ *       400:
+ *         description: User is not an admin
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Super-admin access required or self-demotion attempted
+ *       404:
+ *         description: User not found
+ *       409:
+ *         description: Cannot demote the last admin
+ *       500:
+ *         description: Failed to demote user
  */
 router.patch('/users/:id/demote', requireSuperAdmin, async (req, res) => {
   try {
@@ -564,6 +1087,40 @@ router.patch('/users/:id/demote', requireSuperAdmin, async (req, res) => {
   }
 });
 
+/**
+ * @openapi
+ * /api/admin/milestones:
+ *   get:
+ *     tags:
+ *       - Admin
+ *     summary: List all milestones across campaigns
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *           enum: [pending, approved, released]
+ *         description: Filter milestones by status
+ *     responses:
+ *       200:
+ *         description: List of milestones with campaign and creator details
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *       400:
+ *         description: Invalid status value
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Admin access required
+ *       500:
+ *         description: Failed to fetch milestones
+ */
 // Migrate old /milestones endpoint if needed
 router.get('/milestones', async (req, res) => {
   const status = req.query.status ? String(req.query.status) : null;
@@ -575,106 +1132,4 @@ router.get('/milestones', async (req, res) => {
   const params = [];
   let where = 'WHERE 1=1';
   if (status) {
-    params.push(status);
-    where += ` AND m.status = $${params.length}`;
-  }
-
-  const { rows } = await db.query(
-    `SELECT m.*, c.title AS campaign_title, c.status AS campaign_status, c.asset_type,
-            c.raised_amount, u.email AS creator_email, u.name AS creator_name
-     FROM milestones m
-     JOIN campaigns c ON c.id = m.campaign_id
-     JOIN users u ON u.id = c.creator_id
-     ${where}
-     ORDER BY m.created_at DESC`,
-    params
-  );
-  res.json(rows);
-});
-
-/**
- * POST /api/admin/campaigns/:id/reconcile
- * Manually force a sync for a specific campaign's raised_amount.
- */
-router.post('/campaigns/:id/reconcile', async (req, res) => {
-  try {
-    const result = await reconcileSingleCampaign(req.params.id);
-    res.json({ message: 'Reconciliation completed', result });
-  } catch (err) {
-    if (err.message === 'Campaign not found') {
-      return res.status(404).json({ error: 'Campaign not found' });
-    }
-    logger.error('Error during manual reconciliation', { error: err.message, campaignId: req.params.id });
-    res.status(500).json({ error: 'Failed to reconcile campaign' });
-  }
-});
-
-/**
- * GET /api/admin/refund-queue
- * List all pending refunds awaiting approval with SLA tracking
- */
-router.get('/refund-queue', async (req, res) => {
-  try {
-    const { status, overdue_only, limit = 50, offset = 0 } = req.query;
-    const limitNum = Math.min(parseInt(limit) || 50, 200);
-    const offsetNum = parseInt(offset) || 0;
-
-    let where = `WHERE wr.is_refund = true`;
-    const params = [];
-
-    if (status) {
-      params.push(status);
-      where += ` AND wr.status = $${params.length}`;
-    }
-
-    // Add overdue filter: refunds older than 7 days with status 'pending' or 'on_hold'
-    if (overdue_only === 'true') {
-      where += ` AND wr.status IN ('pending', 'on_hold') AND wr.created_at < NOW() - INTERVAL '7 days'`;
-    }
-
-    const { rows } = await db.query(
-      `SELECT wr.id, wr.campaign_id, wr.amount, wr.asset, wr.destination_key, wr.status,
-              wr.is_refund, wr.dispute_id, wr.created_at, wr.creator_signed, wr.platform_signed,
-              c.title as campaign_title,
-              u.email as contributor_email,
-              CASE
-                WHEN wr.status IN ('pending', 'on_hold') AND wr.created_at < NOW() - INTERVAL '7 days'
-                THEN true
-                ELSE false
-              END as is_overdue,
-              EXTRACT(EPOCH FROM (NOW() - wr.created_at)) / 86400 as days_pending
-       FROM withdrawal_requests wr
-       JOIN campaigns c ON c.id = wr.campaign_id
-       LEFT JOIN users u ON u.wallet_public_key = wr.destination_key
-       ${where}
-       ORDER BY wr.created_at ASC
-       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
-      [...params, limitNum, offsetNum]
-    );
-
-    const { rows: countRows } = await db.query(
-      `SELECT COUNT(*) FROM withdrawal_requests wr ${where}`,
-      params
-    );
-    const total = parseInt(countRows[0].count);
-
-    res.json({
-      refunds: rows.map(r => ({
-        ...r,
-        amount: parseFloat(r.amount),
-        days_pending: parseFloat(r.days_pending.toFixed(2)),
-        is_overdue: r.is_overdue,
-      })),
-      pagination: {
-        limit: limitNum,
-        offset: offsetNum,
-        total,
-      },
-    });
-  } catch (err) {
-    logger.error('Error fetching refund queue', { error: err.message });
-    res.status(500).json({ error: 'Failed to fetch refund queue' });
-  }
-});
-
-module.exports = router;
+    params.push(status

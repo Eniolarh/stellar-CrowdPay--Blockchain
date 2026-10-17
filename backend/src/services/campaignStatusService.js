@@ -1,13 +1,18 @@
 const db = require('../config/database');
 const logger = require('../config/logger');
 const { triggerCampaignStatusActions } = require('./campaignStatusActions');
+const { runWithRequestContext, getRequestId } = require('../config/requestContext');
 
 const PREVIOUS_STATUS = 'active';
+const CRON_REQUEST_ID = 'campaign-status-cron';
 
-async function runStatusActionsForCampaign(campaign) {
+async function runStatusActionsForCampaign(campaign, requestId) {
   if (!campaign) return;
+  const correlationId = requestId || getRequestId() || CRON_REQUEST_ID;
   try {
-    await triggerCampaignStatusActions(campaign, PREVIOUS_STATUS);
+    await runWithRequestContext({ requestId: correlationId }, () =>
+      triggerCampaignStatusActions(campaign, PREVIOUS_STATUS)
+    );
   } catch (err) {
     logger.error('Campaign status actions failed', {
       campaign_id: campaign.id,
@@ -59,6 +64,7 @@ async function refreshCampaignStatus(campaignId, client) {
  * Batch refresh for all still-active campaigns (hourly cron).
  */
 async function refreshActiveCampaignStatuses() {
+  const requestId = getRequestId() || CRON_REQUEST_ID;
   const { rows: funded } = await db.query(
     `UPDATE campaigns
      SET status = 'funded'
@@ -85,10 +91,10 @@ async function refreshActiveCampaignStatuses() {
   }
 
   for (const campaign of funded) {
-    await runStatusActionsForCampaign(campaign);
+    await runStatusActionsForCampaign(campaign, requestId);
   }
   for (const campaign of failed) {
-    await runStatusActionsForCampaign(campaign);
+    await runStatusActionsForCampaign(campaign, requestId);
   }
 
   return { funded, failed };

@@ -93,6 +93,31 @@ async function setCampaignStatusFromMilestoneProgress(client, campaignId) {
   return updated[0] || null;
 }
 
+/**
+ * @openapi
+ * /milestones/campaign/{campaignId}:
+ *   get:
+ *     summary: List milestones for a campaign
+ *     description: Returns all milestones for the given campaign, ordered by sort_order then created_at.
+ *     tags:
+ *       - Milestones
+ *     parameters:
+ *       - in: path
+ *         name: campaignId
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     responses:
+ *       200:
+ *         description: Array of milestone records
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 $ref: '#/components/schemas/Milestone'
+ */
 router.get('/campaign/:campaignId', async (req, res) => {
   const { rows } = await db.query(
     `SELECT m.*, 
@@ -106,6 +131,53 @@ router.get('/campaign/:campaignId', async (req, res) => {
   res.json(rows);
 });
 
+/**
+ * @openapi
+ * /milestones:
+ *   post:
+ *     summary: Create a milestone
+ *     description: |
+ *       Only the campaign creator may add milestones. A campaign may define at most 5
+ *       milestones and the sum of release percentages may not exceed 100%.
+ *     tags:
+ *       - Milestones
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [campaign_id, title, release_percentage]
+ *             properties:
+ *               campaign_id:
+ *                 type: string
+ *                 format: uuid
+ *               title:
+ *                 type: string
+ *               description:
+ *                 type: string
+ *               release_percentage:
+ *                 type: number
+ *                 minimum: 0
+ *                 maximum: 100
+ *               sort_order:
+ *                 type: integer
+ *     responses:
+ *       201:
+ *         description: Created milestone
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Milestone'
+ *       400:
+ *         description: Validation error (missing fields, invalid percentage, milestone limit, or total percentage exceeded)
+ *       403:
+ *         description: Caller is not the campaign creator
+ *       404:
+ *         description: Campaign not found
+ */
 router.post('/', requireAuth, async (req, res) => {
   const {
     campaign_id: campaignId,
@@ -175,6 +247,56 @@ router.post('/', requireAuth, async (req, res) => {
   }
 });
 
+/**
+ * @openapi
+ * /milestones/{id}/submit:
+ *   post:
+ *     summary: Submit milestone evidence
+ *     description: |
+ *       The campaign creator submits evidence for a milestone along with the payout
+ *       destination. If the campaign has a verified Soroban milestones contract the
+ *       submission is mirrored on-chain (best effort).
+ *     tags:
+ *       - Milestones
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [evidence_url, destination_key]
+ *             properties:
+ *               evidence_url:
+ *                 type: string
+ *                 format: uri
+ *               destination_key:
+ *                 type: string
+ *                 description: Stellar public key that will receive the release payout
+ *     responses:
+ *       200:
+ *         description: Updated milestone
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Milestone'
+ *       400:
+ *         description: Missing or invalid evidence_url / destination_key
+ *       403:
+ *         description: Caller is not the campaign creator
+ *       404:
+ *         description: Milestone not found
+ *       409:
+ *         description: Campaign status does not allow submission, or milestone already released
+ */
 router.post('/:id/submit', requireAuth, async (req, res) => {
   const { evidence_url: evidenceUrl, destination_key: destinationKey } = req.body || {};
   if (!evidenceUrl || !destinationKey) {
@@ -251,6 +373,50 @@ router.post('/:id/submit', requireAuth, async (req, res) => {
   res.json(updated[0]);
 });
 
+/**
+ * @openapi
+ * /milestones/{id}/reject:
+ *   post:
+ *     summary: Reject a submitted milestone
+ *     description: |
+ *       Only the designated platform approver may reject a milestone. The milestone is
+ *       reset to `pending` with the supplied review note. If the campaign has a verified
+ *       Soroban milestones contract the rejection is mirrored on-chain (best effort).
+ *     tags:
+ *       - Milestones
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [reason]
+ *             properties:
+ *               reason:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Updated milestone
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Milestone'
+ *       400:
+ *         description: reason is required
+ *       403:
+ *         description: Caller is not the designated platform approver
+ *       404:
+ *         description: Milestone not found or already released
+ */
 router.post('/:id/reject', requireAuth, async (req, res) => {
   if (!canPerformPlatformSignature(req.user.userId)) {
     return res.status(403).json({ error: 'Only the designated platform approver can reject milestones' });
@@ -571,8 +737,115 @@ const approveMilestoneReleaseHandler = async (req, res) => {
   }
 };
 
+/**
+ * @openapi
+ * /milestones/{id}/release:
+ *   post:
+ *     summary: Approve and release a milestone payout
+ *     description: |
+ *       Only the designated platform approver may release a milestone. The payout amount
+ *       is derived from the campaign's raised amount and the milestone release percentage
+ *       using integer stroop math. The release is claimed atomically, signed by both the
+ *       campaign creator and the platform, submitted to Stellar, and recorded as a
+ *       withdrawal request. If the campaign has a verified Soroban milestones contract the
+ *       approval is mirrored on-chain (best effort).
+ *     tags:
+ *       - Milestones
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               reason:
+ *                 type: string
+ *                 description: Optional review note stored on the milestone and withdrawal events
+ *     responses:
+ *       200:
+ *         description: Milestone released
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 milestone:
+ *                   $ref: '#/components/schemas/Milestone'
+ *                 withdrawal_request:
+ *                   $ref: '#/components/schemas/WithdrawalRequest'
+ *                 campaign_status:
+ *                   type: string
+ *       403:
+ *         description: Caller is not the designated platform approver
+ *       404:
+ *         description: Milestone not found
+ *       409:
+ *         description: Campaign status does not allow approval, evidence/destination missing, already released, or a release is already in progress
+ *       422:
+ *         description: Release transaction does not carry both creator and platform signatures
+ *       500:
+ *         description: Release was submitted on-chain but could not be recorded cleanly
+ *       502:
+ *         description: Could not build or submit the release transaction
+ *       503:
+ *         description: Creator signature could not be produced
+ */
 router.post('/:id/release', requireAuth, approveMilestoneReleaseHandler);
-// Deprecated alias of POST /:id/release (see API.md).
+
+/**
+ * @openapi
+ * /milestones/{id}/approve:
+ *   post:
+ *     summary: Deprecated alias of POST /milestones/{id}/release
+ *     deprecated: true
+ *     description: Use POST /milestones/{id}/release instead. Behaviour is identical.
+ *     tags:
+ *       - Milestones
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               reason:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Milestone released
+ *       403:
+ *         description: Caller is not the designated platform approver
+ *       404:
+ *         description: Milestone not found
+ *       409:
+ *         description: Release not permitted in the current state
+ *       422:
+ *         description: Missing required signatures
+ *       500:
+ *         description: Release submitted but not recorded cleanly
+ *       502:
+ *         description: Could not build or submit the release transaction
+ *       503:
+ *         description: Creator signature could not be produced
+ */
 router.post('/:id/approve', requireAuth, approveMilestoneReleaseHandler);
 
 module.exports = router;

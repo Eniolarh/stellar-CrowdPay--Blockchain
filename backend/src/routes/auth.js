@@ -411,6 +411,46 @@ router.post('/login', loginLimiter, loginValidation, validateRequest, asyncHandl
   });
 }));
 
+/**
+ * @openapi
+ * /api/auth/refresh:
+ *   post:
+ *     tags: [Users]
+ *     summary: Rotate the refresh token and issue a new access token
+ *     description: >
+ *       Reads the refresh token from the `cp_refresh_token` httpOnly cookie,
+ *       revokes it, and issues a new access token plus a rotated refresh token
+ *       in the same session family. Reuse of an already-revoked refresh token
+ *       revokes the entire session family and clears both auth cookies.
+ *     responses:
+ *       200:
+ *         description: Tokens rotated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 user:
+ *                   type: object
+ *                   properties:
+ *                     id: { type: integer }
+ *                     email: { type: string, format: email }
+ *                     name: { type: string }
+ *                     wallet_public_key: { type: string }
+ *                     wallet_type: { type: string, enum: [custodial, freighter] }
+ *                     role: { type: string }
+ *                     kyc_status: { type: string }
+ *                     kyc_completed_at: { type: string, nullable: true }
+ *                     kyc_required_for_campaigns: { type: boolean }
+ *       401:
+ *         description: Missing, invalid, expired, or reused refresh token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error: { type: string }
+ */
 router.post('/refresh', asyncHandler(async (req, res) => {
   const token = req.cookies?.[REFRESH_TOKEN_COOKIE_NAME];
   if (!token) {
@@ -449,6 +489,26 @@ router.post('/refresh', asyncHandler(async (req, res) => {
   });
 }));
 
+/**
+ * @openapi
+ * /api/auth/logout:
+ *   post:
+ *     tags: [Users]
+ *     summary: Log out and revoke the current refresh token
+ *     description: >
+ *       Revokes the refresh token supplied in the `cp_refresh_token` cookie and
+ *       clears both the refresh and access token cookies. Safe to call without
+ *       an active session.
+ *     responses:
+ *       200:
+ *         description: Logged out
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok: { type: boolean }
+ */
 router.post('/logout', asyncHandler(async (req, res) => {
   const token = req.cookies?.[REFRESH_TOKEN_COOKIE_NAME];
   if (token) {
@@ -598,6 +658,46 @@ router.post('/resend-verification', resendVerificationLimiter, requireAuth, asyn
   res.json({ message: 'Verification email sent. Please check your inbox.' });
 });
 
+/**
+ * @openapi
+ * /api/auth/forgot-password:
+ *   post:
+ *     tags: [Users]
+ *     summary: Request a password reset link
+ *     description: >
+ *       Always responds with the same generic message so the endpoint cannot be
+ *       used to enumerate registered email addresses. When the email exists, a
+ *       reset link valid for 1 hour is sent and any previous unused reset
+ *       tokens are invalidated.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email]
+ *             properties:
+ *               email: { type: string, format: email }
+ *     responses:
+ *       200:
+ *         description: Generic confirmation message
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message: { type: string }
+ *       400:
+ *         description: Validation error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error: { type: string }
+ *       429:
+ *         description: Too many requests
+ */
 router.post(
   '/forgot-password',
   loginLimiter,
@@ -640,6 +740,46 @@ router.post(
     res.json({ message: FORGOT_PASSWORD_MESSAGE });
   }));
 
+/**
+ * @openapi
+ * /api/auth/reset-password:
+ *   post:
+ *     tags: [Users]
+ *     summary: Reset a password using a reset token
+ *     description: >
+ *       Consumes a single-use reset token, updates the password, bumps the
+ *       user's token version, and revokes all active refresh tokens so every
+ *       existing session is invalidated.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [token, password]
+ *             properties:
+ *               token: { type: string }
+ *               password: { type: string, minLength: 6 }
+ *     responses:
+ *       200:
+ *         description: Password reset successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message: { type: string }
+ *       400:
+ *         description: Invalid or expired reset link, or validation error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error: { type: string }
+ *       429:
+ *         description: Too many requests
+ */
 router.post(
   '/reset-password',
   loginLimiter,

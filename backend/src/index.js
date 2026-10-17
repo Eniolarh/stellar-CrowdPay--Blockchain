@@ -65,6 +65,9 @@ const globalApiLimiter = rateLimit({
 });
 app.use('/api', globalApiLimiter);
 
+// Swagger is the single source of truth for the API surface. The spec is
+// assembled from the JSDoc annotations in the route files so that the docs
+// served at /api/docs cannot drift from the implemented routes.
 const openApiSpec = swaggerJsdoc({
   definition: {
     openapi: '3.0.0',
@@ -84,7 +87,25 @@ const openApiSpec = swaggerJsdoc({
   },
   apis: ['./src/routes/*.js'],
 });
-app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(openApiSpec));
+
+// Docs are gated: enabled only when ENABLE_API_DOCS is explicitly truthy, or
+// (when the flag is unset) only outside production. This keeps the public
+// /api/docs surface closed by default in production deployments.
+function isApiDocsEnabled() {
+  const flag = process.env.ENABLE_API_DOCS;
+  if (flag !== undefined && flag !== '') {
+    return flag === 'true' || flag === '1';
+  }
+  return process.env.NODE_ENV !== 'production';
+}
+
+if (isApiDocsEnabled()) {
+  app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(openApiSpec));
+} else {
+  app.use('/api/docs', (req, res) => {
+    res.status(404).json({ error: 'Not found' });
+  });
+}
 
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/users', require('./routes/users'));
@@ -225,3 +246,4 @@ if (require.main === module) {
 }
 
 module.exports = app;
+module.exports.openApiSpec = openApiSpec;

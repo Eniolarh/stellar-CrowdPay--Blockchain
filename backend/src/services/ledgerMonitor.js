@@ -20,6 +20,7 @@ const {
 const cache = require("../utils/cache");
 const { sendAlert } = require("./alerting");
 const Sentry = require("@sentry/node");
+const { runWithCapturedContext } = require("../config/requestContext");
 
 /** wallet_public_key -> stream metadata */
 const streamRegistry = new Map();
@@ -167,12 +168,14 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function scheduleStalledReplay(campaignId, walletPublicKey, delayMs) {
   const timer = setTimeout(() => {
-    replayMissedPayments(campaignId, walletPublicKey).catch((err) =>
-      logger.error("Stalled ledger replay failed", {
-        wallet_public_key: walletPublicKey,
-        campaign_id: campaignId,
-        error: err.message,
-      }),
+    runWithCapturedContext(() =>
+      replayMissedPayments(campaignId, walletPublicKey).catch((err) =>
+        logger.error("Stalled ledger replay failed", {
+          wallet_public_key: walletPublicKey,
+          campaign_id: campaignId,
+          error: err.message,
+        }),
+      ),
     );
   }, delayMs);
   if (typeof timer.unref === "function") timer.unref();
@@ -449,57 +452,62 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
   }
 
   if (postCommitHooks) {
+    // Capture the originating request context (request_id) before deferring so
+    // receipt emails, webhook emits and status actions stay correlated.
+    const hooks = postCommitHooks;
     setImmediate(() => {
-      // Bust public caches — contribution changes raised_amount and contributor_count
-      cache.invalidate(`campaigns:id:${postCommitHooks.campaignId}`);
-      cache.invalidatePrefix('campaigns:list:');
-      cache.invalidatePrefix('stats:');
+      runWithCapturedContext(() => {
+        // Bust public caches — contribution changes raised_amount and contributor_count
+        cache.invalidate(`campaigns:id:${hooks.campaignId}`);
+        cache.invalidatePrefix('campaigns:list:');
+        cache.invalidatePrefix('stats:');
 
-      sendContributionReceipt(postCommitHooks.receiptPayload).catch((e) =>
-        logger.error("[receipt] Email failed", {
-          campaign_id: postCommitHooks.campaignId,
-          tx_hash: postCommitHooks.receiptPayload.txHash,
-          error: e.message,
-        }),
-      );
-
-      // User-level webhooks (legacy)
-      emitWebhookEventForUser(
-        postCommitHooks.creatorId,
-        WEBHOOK_EVENTS.CONTRIBUTION_RECEIVED,
-        postCommitHooks.contributionPayload,
-      ).catch((e) =>
-        logger.error("Contribution webhook emit failed", { error: e.message }),
-      );
-
-      // Campaign-level webhooks
-      emitWebhookEventForCampaign(
-        postCommitHooks.campaignId,
-        WEBHOOK_EVENTS.CONTRIBUTION_INDEXED,
-        {
-          campaign_id: postCommitHooks.campaignId,
-          tx_hash: postCommitHooks.receiptPayload.txHash,
-          amount: postCommitHooks.receiptPayload.amount,
-          asset: postCommitHooks.receiptPayload.asset,
-          sender: postCommitHooks.receiptPayload.senderPublicKey,
-          timestamp: new Date().toISOString(),
-        },
-      ).catch((e) =>
-        logger.error("Campaign contribution webhook emit failed", { error: e.message }),
-      );
-
-      if (postCommitHooks.fundedCampaign) {
-        const { triggerCampaignStatusActions } = require('./campaignStatusActions');
-        triggerCampaignStatusActions(
-          { id: postCommitHooks.campaignId, status: 'funded' },
-          'active',
-        ).catch((e) =>
-          logger.error('Funded status actions failed', {
-            campaign_id: postCommitHooks.campaignId,
+        sendContributionReceipt(hooks.receiptPayload).catch((e) =>
+          logger.error("[receipt] Email failed", {
+            campaign_id: hooks.campaignId,
+            tx_hash: hooks.receiptPayload.txHash,
             error: e.message,
           }),
         );
-      }
+
+        // User-level webhooks (legacy)
+        emitWebhookEventForUser(
+          hooks.creatorId,
+          WEBHOOK_EVENTS.CONTRIBUTION_RECEIVED,
+          hooks.contributionPayload,
+        ).catch((e) =>
+          logger.error("Contribution webhook emit failed", { error: e.message }),
+        );
+
+        // Campaign-level webhooks
+        emitWebhookEventForCampaign(
+          hooks.campaignId,
+          WEBHOOK_EVENTS.CONTRIBUTION_INDEXED,
+          {
+            campaign_id: hooks.campaignId,
+            tx_hash: hooks.receiptPayload.txHash,
+            amount: hooks.receiptPayload.amount,
+            asset: hooks.receiptPayload.asset,
+            sender: hooks.receiptPayload.senderPublicKey,
+            timestamp: new Date().toISOString(),
+          },
+        ).catch((e) =>
+          logger.error("Campaign contribution webhook emit failed", { error: e.message }),
+        );
+
+        if (hooks.fundedCampaign) {
+          const { triggerCampaignStatusActions } = require('./campaignStatusActions');
+          triggerCampaignStatusActions(
+            { id: hooks.campaignId, status: 'funded' },
+            'active',
+          ).catch((e) =>
+            logger.error('Funded status actions failed', {
+              campaign_id: hooks.campaignId,
+              error: e.message,
+            }),
+          );
+        }
+      });
     });
   }
 }
@@ -521,15 +529,17 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
       attempt,
     });
     setTimeout(() => {
-      watchCampaignWallet(campaignId, walletPublicKey)
-        .then(() => reconnectAttempts.delete(walletPublicKey))
-        .catch((err) =>
-          logger.error("Ledger stream reconnect failed", {
-            wallet_public_key: walletPublicKey,
-            campaign_id: campaignId,
-            error: err.message,
-          }),
-        );
+      runWithCapturedContext(() =>
+        watchCampaignWallet(campaignId, walletPublicKey)
+          .then(() => reconnectAttempts.delete(walletPublicKey))
+          .catch((err) =>
+            logger.error("Ledger stream reconnect failed", {
+              wallet_public_key: walletPublicKey,
+              campaign_id: campaignId,
+              error: err.message,
+            }),
+          ),
+      );
     }, delay);
   }
 
@@ -681,25 +691,29 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
     });
 
     setInterval(() => {
-      reconcileCampaignBalances().catch((err) =>
-        logger.error("Periodic balance reconciliation failed", {
-          error: err.message,
-        }),
+      runWithCapturedContext(() =>
+        reconcileCampaignBalances().catch((err) =>
+          logger.error("Periodic balance reconciliation failed", {
+            error: err.message,
+          }),
+        ),
       );
     }, RECONCILE_INTERVAL_MS);
 
     setInterval(
       () => {
-        getLedgerStreamHealth()
-          .then((h) => {
-            const bad = h.streams.filter((s) => s.stale_stream_no_messages_15m);
-            if (bad.length) {
-              logger.warn("Ledger stream health: connected streams idle >15m", {
-                wallet_public_keys: bad.map((b) => b.wallet_public_key),
-              });
-            }
-          })
-          .catch(() => {});
+        runWithCapturedContext(() =>
+          getLedgerStreamHealth()
+            .then((h) => {
+              const bad = h.streams.filter((s) => s.stale_stream_no_messages_15m);
+              if (bad.length) {
+                logger.warn("Ledger stream health: connected streams idle >15m", {
+                  wallet_public_keys: bad.map((b) => b.wallet_public_key),
+                });
+              }
+            })
+            .catch(() => {}),
+        );
       },
       5 * 60 * 1000,
     );
