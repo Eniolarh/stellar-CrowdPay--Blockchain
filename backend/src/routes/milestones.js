@@ -17,6 +17,7 @@ const {
 const { withDecryptedWalletSecret } = require('../services/walletSecrets');
 const { emitWebhookEventForUser, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
 const { invokeContract, nativeToScVal } = require('../services/sorobanService');
+const { CircuitOpenError } = require('../services/circuitBreaker');
 const crypto = require('crypto');
 const {
   parseAmountToStroops,
@@ -343,16 +344,26 @@ const approveMilestoneReleaseHandler = async (req, res) => {
     logger.warn('Reconciling milestone release that was submitted on-chain', { milestone_id: milestone.id, tx_hash: txHash });
   } else {
     // Claim the release BEFORE any on-chain submission; only one concurrent approval can win.
-    const { rows: claimRows } = await db.query(
-      `UPDATE milestones m
-       SET release_claimed_at = NOW()
-       WHERE m.id = $1
-         AND m.status <> 'released'
-         AND m.release_claimed_at IS NULL
-         AND NOT EXISTS (SELECT 1 FROM withdrawal_requests w WHERE w.milestone_id = m.id)
-       RETURNING m.id`,
-      [milestone.id]
-    );
+    // The partial unique index on active claims is the storage-level backstop, so a 23505
+    // here means another request won the race and we must fail cleanly with 409.
+    let claimRows;
+    try {
+      ({ rows: claimRows } = await db.query(
+        `UPDATE milestones m
+         SET release_claimed_at = NOW()
+         WHERE m.id = $1
+           AND m.status <> 'released'
+           AND m.release_claimed_at IS NULL
+           AND NOT EXISTS (SELECT 1 FROM withdrawal_requests w WHERE w.milestone_id = m.id)
+         RETURNING m.id`,
+        [milestone.id]
+      ));
+    } catch (err) {
+      if (err.code === '23505') {
+        return res.status(409).json({ error: 'A release is already in progress or recorded for this milestone' });
+      }
+      throw err;
+    }
     if (!claimRows.length) {
       return res.status(409).json({ error: 'A release is already in progress or recorded for this milestone' });
     }
@@ -372,6 +383,13 @@ const approveMilestoneReleaseHandler = async (req, res) => {
       });
     } catch (err) {
       await releaseClaim();
+      if (err instanceof CircuitOpenError) {
+        logger.warn('Milestone release build blocked by open circuit breaker', { milestone_id: milestone.id });
+        return res.status(503).json({
+          error: 'Stellar network is temporarily unavailable. Please retry shortly.',
+          retry_after_seconds: err.retryAfterSeconds,
+        });
+      }
       logger.error('Milestone release transaction build failed', { milestone_id: milestone.id, error: err.message });
       return res.status(502).json({ error: 'Could not build the milestone release transaction' });
     }
@@ -410,6 +428,13 @@ const approveMilestoneReleaseHandler = async (req, res) => {
       txHash = await submitSignedWithdrawal({ xdr: fullySignedXdr });
     } catch (err) {
       await releaseClaim();
+      if (err instanceof CircuitOpenError) {
+        logger.warn('Milestone release submission blocked by open circuit breaker', { milestone_id: milestone.id });
+        return res.status(503).json({
+          error: 'Stellar network is temporarily unavailable. Please retry shortly.',
+          retry_after_seconds: err.retryAfterSeconds,
+        });
+      }
       logger.error('Milestone release submission failed', { milestone_id: milestone.id, error: err.message });
       sendAlert('Milestone release submission failed', { milestone_id: milestone.id, error: err.message });
       return res.status(502).json({
@@ -445,22 +470,31 @@ const approveMilestoneReleaseHandler = async (req, res) => {
       return res.status(409).json({ error: 'A release has already been recorded for this milestone' });
     }
 
-    const { rows: releaseRows } = await client.query(
-      `INSERT INTO withdrawal_requests
-         (campaign_id, requested_by, amount, destination_key, unsigned_xdr,
-          creator_signed, platform_signed, status, tx_hash, milestone_id)
-       VALUES ($1, $2, $3, $4, $5, TRUE, TRUE, 'submitted', $6, $7)
-       RETURNING *`,
-      [
-        milestone.campaign_id,
-        req.user.userId,
-        releaseAmount,
-        milestone.destination_key,
-        fullySignedXdr,
-        txHash,
-        milestone.id,
-      ]
-    );
+    let releaseRows;
+    try {
+      ({ rows: releaseRows } = await client.query(
+        `INSERT INTO withdrawal_requests
+           (campaign_id, requested_by, amount, destination_key, unsigned_xdr,
+            creator_signed, platform_signed, status, tx_hash, milestone_id)
+         VALUES ($1, $2, $3, $4, $5, TRUE, TRUE, 'submitted', $6, $7)
+         RETURNING *`,
+        [
+          milestone.campaign_id,
+          req.user.userId,
+          releaseAmount,
+          milestone.destination_key,
+          fullySignedXdr,
+          txHash,
+          milestone.id,
+        ]
+      ));
+    } catch (err) {
+      if (err.code === '23505') {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'A release is already in progress or recorded for this milestone' });
+      }
+      throw err;
+    }
     const withdrawalRequest = releaseRows[0];
 
     await logWithdrawalEvent(client, {

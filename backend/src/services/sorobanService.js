@@ -14,9 +14,10 @@ const crypto = require('crypto');
 const { server, networkPassphrase, USDC } = require('../config/stellar');
 const logger = require('../config/logger');
 const { TX_TIMEOUT_CONTRIBUTION_S } = require('../config/constants');
+const { withCircuitBreaker } = require('../config/circuitBreaker');
 
 async function simulateAndPrepare(tx) {
-  const simulation = await server.simulateTransaction(tx);
+  const simulation = await withCircuitBreaker('soroban', () => server.simulateTransaction(tx));
   if (
     simulation?.result?.meta &&
     xdr.TransactionMeta.fromXDR(simulation.result.meta, 'base64').v3().sorobanMeta().returnValue().type() === xdr.ScValType.scvError
@@ -26,12 +27,12 @@ async function simulateAndPrepare(tx) {
   if (simulation?.error) {
     throw new Error(`Simulation failed: ${simulation.error}`);
   }
-  return server.prepareTransaction(tx);
+  return withCircuitBreaker('soroban', () => server.prepareTransaction(tx));
 }
 
 async function submitOperation(operation, signerSecret) {
   const signer = Keypair.fromSecret(signerSecret);
-  const source = await server.loadAccount(signer.publicKey());
+  const source = await withCircuitBreaker('soroban', () => server.loadAccount(signer.publicKey()));
 
   const tx = new TransactionBuilder(source, {
     fee: BASE_FEE,
@@ -43,7 +44,7 @@ async function submitOperation(operation, signerSecret) {
 
   const preparedTx = await simulateAndPrepare(tx);
   preparedTx.sign(signer);
-  const result = await server.submitTransaction(preparedTx);
+  const result = await withCircuitBreaker('soroban', () => server.submitTransaction(preparedTx));
 
   if (result.status === 'SUCCESS') {
     const resultMetaXdr = xdr.TransactionMeta.fromXDR(result.resultMetaXdr, 'base64');

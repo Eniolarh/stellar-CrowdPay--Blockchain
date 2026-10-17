@@ -71,4 +71,4 @@ function validateEnv() {
   }
 }
 
-module.exports = { validateEnv, REQUIRED, DEV_ONLY_VALUES };
+module.exports = { validateEnv, REQUIRED, STORAGE_VARS, DEV_ONLY_VALUES };
