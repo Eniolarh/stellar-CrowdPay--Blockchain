@@ -110,7 +110,7 @@ describe('ContributeModal form', () => {
     renderModal({ min_contribution: '5' });
     await user.type(amountInput(), '4');
     await user.click(screen.getByRole('button', { name: /confirm payment/i }));
-    expect(await screen.findByText(/Minimum contribution is 5 USDC/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Contribution amount is below the minimum limit of 5 USDC/i)).toBeInTheDocument();
     expect(api.contribute).not.toHaveBeenCalled();
   });
 
@@ -119,7 +119,7 @@ describe('ContributeModal form', () => {
     renderModal({ max_contribution: '100' });
     await user.type(amountInput(), '101');
     await user.click(screen.getByRole('button', { name: /confirm payment/i }));
-    expect(await screen.findByText(/Maximum contribution is 100 USDC/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Contribution violates the maximum limit of 100 USDC/i)).toBeInTheDocument();
     expect(api.contribute).not.toHaveBeenCalled();
   });
 
