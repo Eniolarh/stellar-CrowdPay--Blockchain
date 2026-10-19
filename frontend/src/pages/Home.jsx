@@ -11,6 +11,7 @@ import {
   dismissContributorOnboarding,
   consumeJustRegistered,
 } from '../lib/onboarding';
+import { CATEGORY_KEYS } from '../lib/categories';
 
 const STATUS_OPTIONS = ['', 'active', 'funded', 'closed', 'failed'];
 const ASSET_OPTIONS = ['', 'USDC', 'XLM'];
@@ -20,17 +21,6 @@ const SORT_OPTIONS = [
   { value: 'most_funded', key: 'home.mostFunded' },
   { value: 'closest_to_goal', key: 'home.closestToGoal' },
 ];
-const CATEGORY_LABELS = {
-  technology: 'Technology',
-  community: 'Community',
-  arts: 'Arts & Culture',
-  education: 'Education',
-  environment: 'Environment',
-  health: 'Health',
-  business: 'Business',
-  open_source: 'Open Source',
-  other: 'Other',
-};
 const SEARCH_DEBOUNCE_MS = 450;
 
 export default function Home() {
@@ -315,7 +305,9 @@ export default function Home() {
             style={category === cat.category ? { ...styles.pill, ...styles.pillActive } : styles.pill}
             onClick={() => setFilters({ category: cat.category })}
           >
-            {CATEGORY_LABELS[cat.category] || cat.category} ({cat.count})
+            {CATEGORY_KEYS.includes(cat.category)
+                ? t(`categories.${cat.category}`)
+                : cat.category} ({cat.count})
           </button>
         ))}
       </div>

@@ -376,5 +376,19 @@
     "goalReached": "Objectif atteint",
     "campaignEnded": "Campagne terminée",
     "campaignClosed": "Campagne fermée"
+  },
+  "categories": {
+    "technology": "Technologie",
+    "community": "Communauté",
+    "arts": "Arts et culture",
+    "education": "Éducation",
+    "environment": "Environnement",
+    "health": "Santé",
+    "business": "Commerce",
+    "open_source": "Open Source",
+    "other": "Autre",
+    "label": "Catégorie",
+    "optional": "(facultatif)",
+    "selectPlaceholder": "Sélectionner une catégorie"
   }
 }
