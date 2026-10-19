@@ -172,7 +172,6 @@ export default function Campaign() {
   const [inviteSuccess, setInviteSuccess] = useState(false);
   const [showQR, setShowQR] = useState(false);
   const [embedCopied, setEmbedCopied] = useState(false);
-  const [showEmbedSection, setShowEmbedSection] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
   const [isEditingCampaign, setIsEditingCampaign] = useState(false);
   const [editFormData, setEditFormData] = useState({
@@ -183,7 +182,6 @@ export default function Campaign() {
   const [editError, setEditError] = useState("");
   const [editSuccess, setEditSuccess] = useState("");
   const [editLoading, setEditLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState("contributions");
   const [editingUpdateId, setEditingUpdateId] = useState(null);
   const [analytics, setAnalytics] = useState(null);
   const [refundBusy, setRefundBusy] = useState(false);
@@ -2301,12 +2299,6 @@ const styles = {
     color: "var(--color-accent)",
     fontWeight: 600,
   },
-  embedPreview: {
-    background: "var(--color-surface)",
-    border: "1px solid var(--color-border-light)",
-    borderRadius: "6px",
-    padding: "0.75rem",
-  },
   emptyBackers: {
     padding: "2.5rem 1rem",
     textAlign: "center",
@@ -2328,18 +2320,6 @@ const styles = {
     fontSize: "0.9rem",
     fontWeight: 800,
     flexShrink: 0,
-  },
-  tabs: {
-    display: "flex",
-    gap: "0.75rem",
-    marginBottom: "1rem",
-    borderBottom: "1px solid var(--color-border-light)",
-    paddingBottom: "0.75rem",
-  },
-  tabButton: {
-    flex: 1,
-    fontSize: "0.9rem",
-    justifyContent: "center",
   },
 };
 
