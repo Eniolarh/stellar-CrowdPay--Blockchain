@@ -5,6 +5,7 @@ const { Keypair, TransactionBuilder } = require('@stellar/stellar-sdk');
 const db = require('../config/database');
 const { networkPassphrase, isTestnet } = require('../config/stellar');
 const { requireAuth, optionalAuth } = require('../middleware/auth');
+const { idempotency } = require('../middleware/idempotency');
 const logger = require('../config/logger');
 const { sendAlert } = require('../services/alerting');
 const { contributionValidation, contributionQuoteValidation, validateRequest } = require('../middleware/validation');
@@ -16,6 +17,13 @@ const {
   getSupportedAssetCodes,
   isBadSequenceError,
 } = require("../services/stellarService");
+const { CircuitOpenError } = require('../services/circuitBreaker');
+
+const STELLAR_UNAVAILABLE_MESSAGE = 'Stellar network temporarily unavailable, retry shortly';
+
+function isCircuitOpenError(err) {
+  return err instanceof CircuitOpenError || err?.name === 'CircuitOpenError' || err?.code === 'CIRCUIT_OPEN';
+}
 const {
   insertContributionSubmitted,
 } = require("../services/stellarTransactionService");
@@ -330,11 +338,20 @@ router.get('/quote', requireAuth, contributionQuoteValidation, validateRequest, 
    */
   const { send_asset, dest_asset, dest_amount } = req.query;
 
-  const paths = await getPathPaymentQuote({
-    sendAsset: send_asset,
-    destAsset: dest_asset,
-    destAmount: dest_amount,
-  });
+  let paths;
+  try {
+    paths = await getPathPaymentQuote({
+      sendAsset: send_asset,
+      destAsset: dest_asset,
+      destAmount: dest_amount,
+    });
+  } catch (err) {
+    if (isCircuitOpenError(err)) {
+      logger.warn('Contribution quote blocked by open circuit breaker', { error: err.message });
+      return res.status(503).json({ error: STELLAR_UNAVAILABLE_MESSAGE });
+    }
+    throw err;
+  }
 
   if (!paths.length) {
     return res.status(404).json({ error: 'No conversion path found for requested assets' });
@@ -435,6 +452,13 @@ router.post('/prepare', requireAuth, prepareLimiter, contributionValidation, val
       unsigned_xdr: unsignedXdr,
       flow_metadata: intent.flowMetadata,
       conversion_quote: intent.conversionQuote,
+      amount,
+      send_asset,
+      campaign_wallet_public_key: campaign.wallet_public_key,
+      campaign_min_contribution: campaign.min_contribution,
+      campaign_max_contribution: campaign.max_contribution,
+      campaign_target_amount: campaign.target_amount,
+      campaign_asset_type: campaign.asset_type,
     });
 
     res.json({
@@ -450,6 +474,14 @@ router.post('/prepare', requireAuth, prepareLimiter, contributionValidation, val
       return res.status(422).json({ error: err.message });
     }
 
+    if (isCircuitOpenError(err)) {
+      logger.warn('Freighter contribution preparation blocked by open circuit breaker', {
+        campaign_id,
+        error: err.message,
+      });
+      return res.status(503).json({ error: STELLAR_UNAVAILABLE_MESSAGE });
+    }
+
     logger.error('Freighter contribution preparation failed', { campaign_id, error: err.message });
     return res.status(503).json({
       error: 'Could not prepare the Stellar transaction right now. Please try again.',
@@ -457,7 +489,7 @@ router.post('/prepare', requireAuth, prepareLimiter, contributionValidation, val
   }
 }));
 
-router.post('/submit-signed', requireAuth, submitSignedLimiter, asyncHandler(async (req, res) => {
+router.post('/submit-signed', requireAuth, submitSignedLimiter, idempotency, asyncHandler(async (req, res) => {
   const { signed_xdr, prepare_token } = req.body;
   if (!signed_xdr || !prepare_token) {
     return res.status(400).json({ error: 'signed_xdr and prepare_token are required' });
@@ -484,15 +516,85 @@ router.post('/submit-signed', requireAuth, submitSignedLimiter, asyncHandler(asy
     return res.status(422).json({ error: err.message });
   }
 
+  // Re-load the campaign and re-validate the prepared claims against its
+  // current state so that mid-flight changes (soft-delete, destination or
+  // limit changes) cannot be bypassed by a previously issued prepare token.
+  const campaign = await loadActiveCampaign(prepared.campaign_id);
+  if (!campaign) {
+    return res.status(409).json({
+      error: 'Campaign is no longer available for contributions',
+      code: 'CAMPAIGN_UNAVAILABLE',
+    });
+  }
+
+  if (
+    prepared.campaign_asset_type !== undefined &&
+    campaign.asset_type !== prepared.campaign_asset_type
+  ) {
+    return res.status(409).json({
+      error: 'Campaign asset type changed since the contribution was prepared',
+      code: 'CAMPAIGN_ASSET_CHANGED',
+    });
+  }
+
+  if (
+    prepared.campaign_wallet_public_key !== undefined &&
+    campaign.wallet_public_key !== prepared.campaign_wallet_public_key
+  ) {
+    return res.status(409).json({
+      error: 'Campaign destination wallet changed since the contribution was prepared',
+      code: 'CAMPAIGN_DESTINATION_CHANGED',
+    });
+  }
+
+  if (prepared.amount === undefined) {
+    return res.status(422).json({
+      error: 'Prepared contribution token is missing the contribution amount',
+      code: 'PREPARE_TOKEN_INVALID',
+    });
+  }
+
+  const preparedAmountStroops = parseAmountToStroops(prepared.amount);
+
+  if (
+    campaign.min_contribution &&
+    preparedAmountStroops < parseAmountToStroops(campaign.min_contribution)
+  ) {
+    return res.status(422).json({
+      error: `Contribution amount is below the current minimum limit of ${campaign.min_contribution} ${campaign.asset_type}`,
+      code: 'AMOUNT_BELOW_MINIMUM',
+    });
+  }
+
+  if (
+    campaign.max_contribution &&
+    preparedAmountStroops > parseAmountToStroops(campaign.max_contribution)
+  ) {
+    return res.status(422).json({
+      error: `Contribution amount exceeds the current maximum limit of ${campaign.max_contribution} ${campaign.asset_type}`,
+      code: 'AMOUNT_ABOVE_MAXIMUM',
+    });
+  }
+
   let txHash;
   try {
     txHash = await submitPreparedTransaction(signed_xdr);
   } catch (err) {
+    if (isCircuitOpenError(err)) {
+      logger.warn('Freighter contribution submission blocked by open circuit breaker', {
+        campaign_id: prepared.campaign_id,
+        error: err.message,
+      });
+      return res.status(503).json({ error: STELLAR_UNAVAILABLE_MESSAGE });
+    }
     logger.error('Freighter contribution submission failed', {
       campaign_id: prepared.campaign_id,
       error: err.message,
     });
     sendAlert('Freighter contribution submission failed', {
+      alert_key: 'contribution.freighter_submission_failed',
+      fingerprint: `${prepared.campaign_id}:${err.name || 'Error'}`,
+      severity: 'critical',
       campaign_id: prepared.campaign_id,
       error: err.message,
     });
@@ -627,6 +729,13 @@ if (
           : {}),
       });
     } catch (err) {
+      if (isCircuitOpenError(err)) {
+        logger.warn('Custodial contribution blocked by open circuit breaker', {
+          campaign_id,
+          error: err.message,
+        });
+        return res.status(503).json({ error: STELLAR_UNAVAILABLE_MESSAGE });
+      }
       if (err.statusCode === 422) {
         return res.status(422).json({ error: err.message });
       }

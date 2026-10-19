@@ -295,6 +295,92 @@ test('delivering row whose lease expired is re-delivered after simulated crash',
   assert.ok(db.seen.updates.some((u) => u.kind === 'user_delivered'));
 });
 
+// ---------------------------------------------------------------------------
+// Replay protection: timestamp + delivery-id headers, timestamp in signature
+// ---------------------------------------------------------------------------
+test('user delivery sends X-CrowdPay-Timestamp and X-CrowdPay-Delivery-Id headers', async () => {
+  const db = makeDb({ deliverableRows: [{ id: 'd-user-1' }] });
+  const dispatcher = loadDispatcher(db);
+  const fetchCalls = [];
+  globalThis.fetch = async (url, opts) => {
+    fetchCalls.push({ url, opts });
+    return jsonResponse(true, 200, 'ok');
+  };
+
+  await dispatcher.processDueRetries();
+
+  assert.equal(fetchCalls.length, 1);
+  const headers = fetchCalls[0].opts.headers;
+  assert.ok(headers['X-CrowdPay-Timestamp'], 'missing X-CrowdPay-Timestamp header');
+  assert.ok(headers['X-CrowdPay-Delivery-Id'], 'missing X-CrowdPay-Delivery-Id header');
+  assert.match(headers['X-CrowdPay-Delivery-Id'], /d-user-1/);
+});
+
+test('user delivery timestamp is a recent epoch value (within 5 minutes)', async () => {
+  const db = makeDb({ deliverableRows: [{ id: 'd-user-1' }] });
+  const dispatcher = loadDispatcher(db);
+  const fetchCalls = [];
+  globalThis.fetch = async (url, opts) => {
+    fetchCalls.push({ url, opts });
+    return jsonResponse(true, 200, 'ok');
+  };
+
+  const before = Math.floor(Date.now() / 1000);
+  await dispatcher.processDueRetries();
+  const after = Math.floor(Date.now() / 1000);
+
+  assert.equal(fetchCalls.length, 1);
+  const raw = fetchCalls[0].opts.headers['X-CrowdPay-Timestamp'];
+  assert.match(raw, /^\d+$/, 'timestamp header must be an integer epoch value');
+  const ts = Number(raw);
+  assert.ok(ts >= before - 300 && ts <= after + 300, `timestamp ${ts} outside ±5 min window`);
+});
+
+test('user delivery signature covers `${timestamp}.${body}`', async () => {
+  const db = makeDb({ deliverableRows: [{ id: 'd-user-1' }] });
+  const dispatcher = loadDispatcher(db);
+  const fetchCalls = [];
+  globalThis.fetch = async (url, opts) => {
+    fetchCalls.push({ url, opts });
+    return jsonResponse(true, 200, 'ok');
+  };
+
+  await dispatcher.processDueRetries();
+
+  assert.equal(fetchCalls.length, 1);
+  const { headers, body } = fetchCalls[0].opts;
+  const ts = headers['X-CrowdPay-Timestamp'];
+  const expected = crypto
+    .createHmac('sha256', db.userDelivery.secret)
+    .update(`${ts}.${body}`, 'utf8')
+    .digest('hex');
+  assert.equal(headers['X-CrowdPay-Signature'], `sha256=${expected}`);
+});
+
+test('campaign delivery sends timestamp and delivery-id headers with timestamp-signed payload', async () => {
+  const db = makeDb({ campaignRows: [{ id: 'd-campaign-1' }] });
+  const dispatcher = loadDispatcher(db);
+  const fetchCalls = [];
+  globalThis.fetch = async (url, opts) => {
+    fetchCalls.push({ url, opts });
+    return jsonResponse(true, 200, 'ok');
+  };
+
+  await dispatcher.processDueCampaignWebhookRetries();
+
+  assert.equal(fetchCalls.length, 1);
+  const { headers, body } = fetchCalls[0].opts;
+  assert.ok(headers['X-CrowdPay-Timestamp'], 'missing X-CrowdPay-Timestamp header');
+  assert.match(headers['X-CrowdPay-Delivery-Id'], /d-campaign-1/);
+  assert.match(headers['X-CrowdPay-Timestamp'], /^\d+$/);
+
+  const expected = crypto
+    .createHmac('sha256', db.campaignDelivery.secret)
+    .update(`${headers['X-CrowdPay-Timestamp']}.${body}`, 'utf8')
+    .digest('hex');
+  assert.equal(headers['X-CrowdPay-Signature'], `sha256=${expected}`);
+});
+
 test('rows still within the delivery lease are not re-picked', async () => {
   const db = makeDb({ deliverableRows: [] });
   const dispatcher = loadDispatcher(db);

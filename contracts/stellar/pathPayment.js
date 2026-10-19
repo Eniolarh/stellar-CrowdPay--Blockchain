@@ -6,11 +6,12 @@
  * Stellar's DEX finds the conversion path automatically.
  *
  * Usage:
- *   node contracts/stellar/pathPayment.js --quote <sendAsset> <destAmount> <destAsset> [slippageTolerance]
+ *   node contracts/stellar/pathPayment.js --quote <sendAsset> <sendAmount> <destAsset>
  *   node contracts/stellar/pathPayment.js --send <senderSecret> <destPublicKey> <sendAsset> <sendMax> <destAmount>
  */
 
-require('dotenv').config({ path: '../../backend/.env' });
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '../../backend/.env') });
 
 const {
   Keypair,
@@ -31,6 +32,19 @@ const server = new Horizon.Server(
 const networkPassphrase = Networks.TESTNET;
 const USDC = new Asset('USDC', process.env.USDC_ISSUER);
 
+const isTestnet = process.env.STELLAR_NETWORK !== 'mainnet';
+const networkPassphrase = isTestnet ? Networks.TESTNET : Networks.PUBLIC;
+
+const server = new Horizon.Server(
+  process.env.STELLAR_HORIZON_URL || (isTestnet ? 'https://horizon-testnet.stellar.org' : 'https://horizon.stellar.org')
+);
+const USDC = new Asset('USDC', process.env.USDC_ISSUER);
+
+function handleError(err) {
+  console.error(err);
+  process.exit(1);
+}
+
 function resolveAsset(code) {
   if (code === 'XLM') return Asset.native();
   if (code === 'USDC') return USDC;
@@ -48,6 +62,13 @@ async function quotePath(sendAssetCode, destAmount, destAssetCode, slippageToler
   // Use Stellar's path finding endpoint: third argument is destination amount to receive
   const paths = await server
     .strictReceivePaths(sendAsset, destAsset, String(destAmount))
+async function quotePath(sendAssetCode, sendAmount, destAssetCode) {
+  const sendAsset = resolveAsset(sendAssetCode);
+  const destAsset = resolveAsset(destAssetCode);
+
+  // Use Stellar's path finding endpoint
+  const paths = await server
+    .strictReceivePaths(sendAsset, destAsset, sendAmount)
     .call();
 
   if (!paths.records.length) {
@@ -91,6 +112,24 @@ async function sendPathPayment(senderSecret, destPublicKey, sendAssetCode, sendM
   }
 
   const tx = new TransactionBuilder(senderAccount, { fee: BASE_FEE, networkPassphrase })
+  console.log(`Paths to receive ${sendAmount} ${destAssetCode} by sending ${sendAssetCode}:`);
+  for (const p of paths.records) {
+    console.log(`  Send at most: ${p.source_amount} ${sendAssetCode}`);
+    console.log(`  Path: ${p.path.map((a) => a.asset_code || 'XLM').join(' -> ') || 'direct'}`);
+  }
+}
+
+/**
+ * Execute a path payment:
+ * The sender spends at most `sendMax` of `sendAsset`
+ * The destination receives exactly `destAmount` of USDC
+ */
+async function sendPathPayment(senderSecret, destPublicKey, sendAssetCode, sendMax, destAmount) {
+  const keypair = Keypair.fromSecret(senderSecret);
+  const account = await server.loadAccount(keypair.publicKey());
+  const sendAsset = resolveAsset(sendAssetCode);
+
+  const tx = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase })
     .addOperation(
       Operation.pathPaymentStrictReceive({
         sendAsset,
@@ -98,15 +137,14 @@ async function sendPathPayment(senderSecret, destPublicKey, sendAssetCode, sendM
         destination: destPublicKey,
         destAsset: USDC,
         destAmount: String(destAmount),
-        path: [], // let Stellar discover the path
       })
     )
     .setTimeout(TX_TIMEOUT_CONTRIBUTION_S)
     .build();
 
-  tx.sign(senderKeypair);
+  tx.sign(keypair);
   const result = await server.submitTransaction(tx);
-  console.log('Path payment submitted.');
+  console.log('Path payment successful.');
   console.log('Tx hash:', result.hash);
 }
 
@@ -117,5 +155,10 @@ else if (flag === '--send') sendPathPayment(args[0], args[1], args[2], args[3], 
 else {
   console.log('Usage:');
   console.log('  node pathPayment.js --quote <sendAsset> <destAmount> <destAsset> [slippageTolerance]');
+if (flag === '--quote') quotePath(args[0], args[1], args[2]).catch(handleError);
+else if (flag === '--send') sendPathPayment(args[0], args[1], args[2], args[3], args[4]).catch(handleError);
+else {
+  console.log('Usage:');
+  console.log('  node pathPayment.js --quote <sendAsset> <destAmount> <destAsset>');
   console.log('  node pathPayment.js --send <senderSecret> <destPublicKey> <sendAsset> <sendMax> <destAmount>');
 }

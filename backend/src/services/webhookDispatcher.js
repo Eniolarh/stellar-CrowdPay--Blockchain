@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const dns = require('dns').promises;
 const net = require('net');
 const db = require('../config/database');
+const { captureContext, runWithCapturedContext } = require('../config/requestContext');
 
 /**
  * SSRF protection — validate a webhook callback URL before making an outbound request.
@@ -145,6 +146,26 @@ function hmacSignature(secret, bodyUtf8) {
   return crypto.createHmac('sha256', secret).update(bodyUtf8, 'utf8').digest('hex');
 }
 
+/**
+ * Sign a webhook payload together with its delivery timestamp so that a
+ * captured delivery cannot be replayed with a fresh timestamp.
+ *
+ * The signed string is `${timestamp}.${bodyUtf8}` (Stripe-style). Consumers
+ * must verify the timestamp window first, then recompute this HMAC, then
+ * de-duplicate on the delivery id.
+ *
+ * @param {string} secret
+ * @param {number|string} timestamp epoch seconds
+ * @param {string} bodyUtf8 raw request body
+ * @returns {string} hex HMAC-SHA256
+ */
+function signWebhookPayload(secret, timestamp, bodyUtf8) {
+  return crypto
+    .createHmac('sha256', secret)
+    .update(`${timestamp}.${bodyUtf8}`, 'utf8')
+    .digest('hex');
+}
+
 function backoffMs(attemptNumber) {
   return Math.min(30_000, 1000 * 2 ** Math.max(0, attemptNumber - 1));
 }
@@ -208,7 +229,8 @@ async function processDelivery(deliveryId) {
   }
 
   const bodyUtf8 = JSON.stringify(row.payload);
-  const sig = hmacSignature(row.secret, bodyUtf8);
+  const timestamp = Math.floor(Date.now() / 1000);
+  const sig = signWebhookPayload(row.secret, timestamp, bodyUtf8);
 
   // SSRF protection: validate URL before sending the request
   try {
@@ -234,8 +256,9 @@ async function processDelivery(deliveryId) {
       headers: {
         'Content-Type': 'application/json',
         'X-CrowdPay-Signature': `sha256=${sig}`,
+        'X-CrowdPay-Timestamp': String(timestamp),
         'X-CrowdPay-Event': row.event_type,
-        'X-CrowdPay-Delivery-Id': deliveryId,
+        'X-CrowdPay-Delivery-Id': String(deliveryId),
       },
       body: bodyUtf8,
       signal: AbortSignal.timeout(9000),
@@ -288,9 +311,14 @@ async function scheduleRetry(deliveryId, attemptJustUsed, errMsg, httpStatus, sn
     [deliveryId, nextAt.toISOString(), errMsg, httpStatus, snippet]
   );
 
+  // Capture the originating request context so the deferred retry re-enters
+  // the same AsyncLocalStorage scope and its logs carry the request_id.
+  const captured = captureContext();
   setTimeout(() => {
-    processDelivery(deliveryId).catch((err) =>
-      console.error(`[webhooks] retry ${deliveryId}:`, err.message)
+    runWithCapturedContext(captured, () =>
+      processDelivery(deliveryId).catch((err) =>
+        console.error(`[webhooks] retry ${deliveryId}:`, err.message)
+      )
     );
   }, delay);
 }
@@ -363,7 +391,8 @@ async function processCampaignWebhookDelivery(deliveryId) {
   }
 
   const bodyUtf8 = JSON.stringify(row.payload);
-  const sig = hmacSignature(row.secret, bodyUtf8);
+  const timestamp = Math.floor(Date.now() / 1000);
+  const sig = signWebhookPayload(row.secret, timestamp, bodyUtf8);
 
   // SSRF protection: validate URL before sending the request
   try {
@@ -389,8 +418,9 @@ async function processCampaignWebhookDelivery(deliveryId) {
       headers: {
         'Content-Type': 'application/json',
         'X-CrowdPay-Signature': `sha256=${sig}`,
+        'X-CrowdPay-Timestamp': String(timestamp),
         'X-CrowdPay-Event': row.event,
-        'X-CrowdPay-Delivery-Id': deliveryId,
+        'X-CrowdPay-Delivery-Id': String(deliveryId),
       },
       body: bodyUtf8,
       signal: AbortSignal.timeout(9000),
@@ -440,9 +470,14 @@ async function scheduleCampaignWebhookRetry(deliveryId, attemptJustUsed, errMsg,
     [deliveryId, nextAt.toISOString(), errMsg, httpStatus]
   );
 
+  // Capture the originating request context so the deferred retry re-enters
+  // the same AsyncLocalStorage scope and its logs carry the request_id.
+  const captured = captureContext();
   setTimeout(() => {
-    processCampaignWebhookDelivery(deliveryId).catch((err) =>
-      console.error(`[campaign-webhooks] retry ${deliveryId}:`, err.message)
+    runWithCapturedContext(captured, () =>
+      processCampaignWebhookDelivery(deliveryId).catch((err) =>
+        console.error(`[campaign-webhooks] retry ${deliveryId}:`, err.message)
+      )
     );
   }, delay);
 }
@@ -463,9 +498,14 @@ async function processDueCampaignWebhookRetries() {
 }
 
 function startWebhookRetryPoller() {
+  // The poller runs outside any request scope; give it a synthetic context so
+  // its logs are identifiable and correlation ids are never undefined.
+  const pollerContext = { requestId: 'webhook-poller' };
   setInterval(() => {
-    processDueRetries().catch((e) => console.error('[webhooks] poller:', e.message));
-    processDueCampaignWebhookRetries().catch((e) => console.error('[campaign-webhooks] poller:', e.message));
+    runWithCapturedContext(pollerContext, () => {
+      processDueRetries().catch((e) => console.error('[webhooks] poller:', e.message));
+      processDueCampaignWebhookRetries().catch((e) => console.error('[campaign-webhooks] poller:', e.message));
+    });
   }, 5000);
 }
 
@@ -475,6 +515,7 @@ module.exports = {
   MAX_DELIVERY_ATTEMPTS,
   MAX_CAMPAIGN_DELIVERY_ATTEMPTS,
   hmacSignature,
+  signWebhookPayload,
   assertSafeWebhookUrl,
   assertNotPrivateIp,
   emitWebhookEventForUser,

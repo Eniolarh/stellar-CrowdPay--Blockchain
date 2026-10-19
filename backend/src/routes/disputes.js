@@ -12,6 +12,61 @@ async function logDisputeEvent(client, { disputeId, actorId, action, note }) {
   );
 }
 
+/**
+ * @openapi
+ * /campaigns/{id}/disputes:
+ *   post:
+ *     summary: Raise a dispute on a campaign
+ *     description: >
+ *       A contributor who has backed the campaign raises a dispute. Pending
+ *       withdrawal requests for the campaign are frozen (set to `on_hold`)
+ *       and the campaign creator is notified by email.
+ *     tags:
+ *       - Disputes
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *         description: Campaign ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - reason
+ *               - description
+ *             properties:
+ *               reason:
+ *                 type: string
+ *                 enum: [non_delivery, misrepresentation, abandoned, other]
+ *               description:
+ *                 type: string
+ *               evidence_url:
+ *                 type: string
+ *                 nullable: true
+ *     responses:
+ *       201:
+ *         description: Dispute created
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Dispute'
+ *       403:
+ *         description: Caller has not contributed to this campaign
+ *       404:
+ *         description: Campaign not found
+ *       409:
+ *         description: Caller already has an open dispute for this campaign
+ *       422:
+ *         description: Invalid reason or missing description
+ */
 // POST /campaigns/:id/disputes — contributor raises a dispute
 router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
   const { reason, description, evidence_url } = req.body;
@@ -99,6 +154,42 @@ router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
   }
 });
 
+/**
+ * @openapi
+ * /campaigns/{id}/disputes:
+ *   get:
+ *     summary: List disputes for a campaign (admin only)
+ *     tags:
+ *       - Disputes
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *         description: Campaign ID
+ *     responses:
+ *       200:
+ *         description: Disputes for the campaign, newest first
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 allOf:
+ *                   - $ref: '#/components/schemas/Dispute'
+ *                   - type: object
+ *                     properties:
+ *                       raised_by_name:
+ *                         type: string
+ *                       raised_by_email:
+ *                         type: string
+ *       403:
+ *         description: Admin role required
+ */
 // GET /campaigns/:id/disputes — admin only
 router.get('/campaigns/:id/disputes', requireAuth, requireRole('admin'), async (req, res) => {
   const { rows } = await db.query(
@@ -112,6 +203,57 @@ router.get('/campaigns/:id/disputes', requireAuth, requireRole('admin'), async (
   res.json(rows);
 });
 
+/**
+ * @openapi
+ * /disputes/{id}:
+ *   patch:
+ *     summary: Update dispute status and resolution note (admin only)
+ *     description: >
+ *       Resolving in favour of the contributor (`resolved_contributor`)
+ *       initiates refunds for the disputing contributor's contributions.
+ *       Resolving in favour of the creator (`resolved_creator`) unfreezes
+ *       withdrawals placed on hold by the dispute.
+ *     tags:
+ *       - Disputes
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *         description: Dispute ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - status
+ *             properties:
+ *               status:
+ *                 type: string
+ *                 enum: [open, under_review, resolved_creator, resolved_contributor, closed]
+ *               resolution_note:
+ *                 type: string
+ *                 nullable: true
+ *     responses:
+ *       200:
+ *         description: Updated dispute
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Dispute'
+ *       403:
+ *         description: Admin role required
+ *       404:
+ *         description: Dispute not found
+ *       422:
+ *         description: Invalid status
+ */
 // PATCH /disputes/:id — admin updates status + resolution note
 router.patch('/disputes/:id', requireAuth, requireRole('admin'), async (req, res) => {
   const { status, resolution_note } = req.body;
@@ -236,6 +378,35 @@ router.patch('/disputes/:id', requireAuth, requireRole('admin'), async (req, res
   }
 });
 
+/**
+ * @openapi
+ * /disputes/{id}/events:
+ *   get:
+ *     summary: Get the audit log for a dispute (admin only)
+ *     tags:
+ *       - Disputes
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *         description: Dispute ID
+ *     responses:
+ *       200:
+ *         description: Dispute events, oldest first
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 $ref: '#/components/schemas/DisputeEvent'
+ *       403:
+ *         description: Admin role required
+ */
 // GET /disputes/:id/events — audit log (admin only)
 router.get('/disputes/:id/events', requireAuth, requireRole('admin'), async (req, res) => {
   const { rows } = await db.query(
