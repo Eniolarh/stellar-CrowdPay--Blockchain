@@ -2,6 +2,7 @@ const router = require('express').Router();
 const db = require('../config/database');
 const logger = require('../config/logger');
 const { requireAuth } = require('../middleware/auth');
+const { idempotency } = require('../middleware/idempotency');
 const { sendAlert } = require('../services/alerting');
 const { withdrawalValidation, validateRequest } = require('../middleware/validation');
 const {
@@ -24,6 +25,7 @@ const { sendEmailSafe } = require('../services/emailService');
 const { emitWebhookEventForUser, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
 const { withDecryptedWalletSecret } = require('../services/walletSecrets');
 const { createNotification } = require('../services/notifications');
+const { getRequestContext } = require('../middleware/requestContext');
 
 const ALLOWED_CAMPAIGN_STATUS_FOR_REQUEST = ['active', 'funded'];
 
@@ -51,13 +53,45 @@ function hasSigner(signers, publicKey) {
   return signers.some((s) => s.key === publicKey && s.weight >= 1);
 }
 
-async function logWithdrawalEvent(client, { withdrawalRequestId, actorUserId, action, note, metadata }) {
+/**
+ * Extract request attribution context (client IP, user-agent, request id) from an
+ * Express request so audit rows can be traced back to the originating request.
+ */
+function requestAuditContext(req) {
+  if (!req) return { actorIp: null, userAgent: null, requestId: null };
+  const ctx = getRequestContext() || {};
+  return {
+    actorIp: req.ip || null,
+    userAgent: (req.headers && req.headers['user-agent']) || null,
+    requestId: req.id || ctx.requestId || null,
+  };
+}
+
+async function logWithdrawalEvent(client, {
+  withdrawalRequestId,
+  actorUserId,
+  action,
+  note,
+  metadata,
+  actorIp,
+  userAgent,
+  requestId,
+}) {
   const runner = client || db;
   await runner.query(
     `INSERT INTO withdrawal_approval_events
-       (withdrawal_request_id, actor_user_id, action, note, metadata)
-     VALUES ($1, $2, $3, $4, $5::jsonb)`,
-    [withdrawalRequestId, actorUserId || null, action, note || null, metadata ? JSON.stringify(metadata) : null]
+       (withdrawal_request_id, actor_user_id, action, note, metadata, actor_ip, user_agent, request_id)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)`,
+    [
+      withdrawalRequestId,
+      actorUserId || null,
+      action,
+      note || null,
+      metadata ? JSON.stringify(metadata) : null,
+      actorIp || null,
+      userAgent || null,
+      requestId || null,
+    ]
   );
 }
 
@@ -95,7 +129,7 @@ router.get('/capabilities', requireAuth, (req, res) => {
   res.json({ can_approve_platform: canPerformPlatformSignature(req.user.userId) });
 });
 
-router.post('/request', requireAuth, withdrawalValidation, validateRequest, async (req, res) => {
+router.post('/request', requireAuth, idempotency, withdrawalValidation, validateRequest, async (req, res) => {
   /**
    * @openapi
    * /api/withdrawals/request:
@@ -215,6 +249,7 @@ router.post('/request', requireAuth, withdrawalValidation, validateRequest, asyn
       action: 'requested',
       note: null,
       metadata: { amount, destination_key, asset_type: campaign.asset_type },
+      ...requestAuditContext(req),
     });
     await insertWithdrawalPendingSignatures(client, {
       campaignId: campaign_id,
@@ -278,10 +313,26 @@ router.post('/:id/approve/creator', requireAuth, async (req, res) => {
       if (!signed_xdr) return res.status(400).json({ error: 'signed_xdr is required for freighter users' });
 
       // Validate the signed_xdr contains a valid signature from the creator's public key
+      // and strictly matches the withdrawal request destination and amount
       try {
-        // validate signature by verifying at least one signature matches user's public key
-        const tx = require('@stellar/stellar-sdk').TransactionBuilder.fromXDR(signed_xdr, require('../config/stellar').networkPassphrase);
-        const signer = require('@stellar/stellar-sdk').Keypair.fromPublicKey(userRow.wallet_public_key);
+        const StellarSdk = require('@stellar/stellar-sdk');
+        const { networkPassphrase } = require('../config/stellar');
+        const tx = StellarSdk.TransactionBuilder.fromXDR(signed_xdr, networkPassphrase);
+
+        if (!tx.operations || tx.operations.length !== 1 || tx.operations[0].type !== 'payment') {
+          return res.status(422).json({ error: 'Signed transaction must contain exactly one payment operation' });
+        }
+
+        const op = tx.operations[0];
+        if (op.destination !== requestRow.destination_key) {
+          return res.status(422).json({ error: 'Signed transaction destination does not match withdrawal request' });
+        }
+
+        if (parseFloat(op.amount) !== parseFloat(requestRow.amount)) {
+          return res.status(422).json({ error: 'Signed transaction amount does not match withdrawal request' });
+        }
+
+        const signer = StellarSdk.Keypair.fromPublicKey(userRow.wallet_public_key);
         const signatureValid = tx.signatures.some((decorated) => {
           try {
             return signer.verify(tx.hash(), decorated.signature());
@@ -293,7 +344,7 @@ router.post('/:id/approve/creator', requireAuth, async (req, res) => {
           return res.status(422).json({ error: 'Signed transaction does not include a valid signature by the creator' });
         }
       } catch (err) {
-        return res.status(422).json({ error: 'Invalid signed_xdr' });
+        return res.status(422).json({ error: err.message || 'Invalid signed_xdr' });
       }
 
       signedXdr = signed_xdr;
@@ -339,6 +390,7 @@ router.post('/:id/approve/creator', requireAuth, async (req, res) => {
       action: 'creator_signed',
       note: null,
       metadata: {},
+      ...requestAuditContext(req),
     });
     await client.query('COMMIT');
     res.json(updated[0]);
@@ -409,6 +461,25 @@ const platformApproveHandler = async (req, res) => {
     });
   }
 
+  // Validate transaction operations match requestRow before platform co-signing
+  try {
+    const StellarSdk = require('@stellar/stellar-sdk');
+    const { networkPassphrase } = require('../config/stellar');
+    const txToVerify = StellarSdk.TransactionBuilder.fromXDR(requestRow.unsigned_xdr, networkPassphrase);
+    if (!txToVerify.operations || txToVerify.operations.length !== 1 || txToVerify.operations[0].type !== 'payment') {
+      return res.status(422).json({ error: 'Transaction must contain exactly one payment operation' });
+    }
+    const op = txToVerify.operations[0];
+    if (op.destination !== requestRow.destination_key) {
+      return res.status(422).json({ error: 'Transaction destination does not match approved withdrawal request' });
+    }
+    if (parseFloat(op.amount) !== parseFloat(requestRow.amount)) {
+      return res.status(422).json({ error: 'Transaction amount does not match approved withdrawal request' });
+    }
+  } catch (err) {
+    return res.status(422).json({ error: 'Malformed withdrawal transaction XDR' });
+  }
+
   const signedXdr = signTransactionXdr({
     xdr: requestRow.unsigned_xdr,
     signerSecret: process.env.PLATFORM_SECRET_KEY,
@@ -418,6 +489,21 @@ const platformApproveHandler = async (req, res) => {
   if (signatureCount < 2) {
     return res.status(422).json({ error: 'Insufficient signatures: expected creator + platform' });
   }
+
+  // Claim the withdrawal BEFORE any on-chain submission; only one concurrent approval can win.
+  const { rows: claimRows } = await db.query(
+    `UPDATE withdrawal_requests
+     SET platform_claimed_at = NOW()
+     WHERE id = $1 AND status = 'pending' AND platform_signed = FALSE AND platform_claimed_at IS NULL
+     RETURNING id`,
+    [req.params.id]
+  );
+  if (!claimRows.length) {
+    return res.status(409).json({ error: 'Withdrawal request is already being processed; refresh and try again.' });
+  }
+  const releaseClaim = () =>
+    db.query('UPDATE withdrawal_requests SET platform_claimed_at = NULL WHERE id = $1', [req.params.id])
+      .catch((e) => logger.error('Failed to release withdrawal claim', { withdrawal_id: req.params.id, error: e.message }));
 
   // Idempotency: the tx hash is derived from the envelope body, so a retry after an ambiguous
   // outcome (submitted but DB update lost) resolves to the same hash. Reconcile against Horizon
@@ -460,6 +546,7 @@ const platformApproveHandler = async (req, res) => {
         tx_hash: expectedHash,
         error: lookupErr.message,
       });
+      await releaseClaim();
       return res.status(503).json({
         error: 'Withdrawal submission outcome is unknown. Retry approval shortly; it will reconcile with Stellar without double-submitting.',
       });
@@ -493,6 +580,7 @@ const platformApproveHandler = async (req, res) => {
         action: 'submit_failed',
         note: err.message || 'Stellar submit failed',
         metadata: { detail: String(err) },
+        ...requestAuditContext(req),
       });
       await markWithdrawalFailed(client, {
         withdrawalRequestId: req.params.id,
@@ -530,6 +618,7 @@ const platformApproveHandler = async (req, res) => {
       action: 'platform_signed',
       note: null,
       metadata: { tx_hash: txHash },
+      ...requestAuditContext(req),
     });
     await finalizeWithdrawalSubmitted(client, {
       withdrawalRequestId: req.params.id,
@@ -576,6 +665,7 @@ const platformApproveHandler = async (req, res) => {
       tx_hash: txHash,
       error: err.message,
     });
+    await releaseClaim();
     res.status(500).json({
       error: 'Transaction submitted but records could not be updated. Retry approval to reconcile; it will not resubmit.',
       tx_hash: txHash,
@@ -635,6 +725,7 @@ router.post('/:id/cancel', requireAuth, async (req, res) => {
       action: 'creator_cancelled',
       note: reason,
       metadata: {},
+      ...requestAuditContext(req),
     });
     await client.query('COMMIT');
     res.json(updated[0]);
@@ -703,6 +794,7 @@ router.post('/:id/reject', requireAuth, requirePlatformApprover, async (req, res
       `UPDATE withdrawal_requests
        SET status = 'denied', denial_reason = $1
        WHERE id = $2 AND status = 'pending' AND creator_signed = TRUE AND platform_signed = FALSE
+         AND platform_claimed_at IS NULL
        RETURNING *`,
       [reason, req.params.id]
     );
@@ -716,6 +808,7 @@ router.post('/:id/reject', requireAuth, requirePlatformApprover, async (req, res
       action: 'platform_rejected',
       note: reason,
       metadata: {},
+      ...requestAuditContext(req),
     });
     await client.query('COMMIT');
 
@@ -808,7 +901,8 @@ const withdrawalAuditHandler = async (req, res) => {
   if (access.error) return res.status(access.status).json({ error: access.error });
 
   const { rows } = await db.query(
-    `SELECT e.id, e.withdrawal_request_id, e.actor_user_id, e.action, e.note, e.metadata, e.created_at
+    `SELECT e.id, e.withdrawal_request_id, e.actor_user_id, e.action, e.note, e.metadata,
+            e.actor_ip, e.user_agent, e.request_id, e.created_at
      FROM withdrawal_approval_events e
      WHERE e.withdrawal_request_id = $1
      ORDER BY e.created_at ASC`,
