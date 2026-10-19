@@ -1,8 +1,10 @@
 const db = require('../config/database');
 const logger = require('../config/logger');
 const { triggerCampaignStatusActions } = require('./campaignStatusActions');
+const { runWithRequestContext, getRequestId } = require('../config/requestContext');
 
 const PREVIOUS_STATUS = 'active';
+const CRON_REQUEST_ID = 'campaign-status-cron';
 
 // Arbitrary constant key for the pg advisory lock guarding the batch refresh.
 const STATUS_REFRESH_ADVISORY_LOCK_KEY = 0x53544154; // "STAT"
@@ -12,8 +14,11 @@ let isRunning = false;
 
 async function runStatusActionsForCampaign(campaign) {
   if (!campaign) return;
+  const correlationId = requestId || getRequestId() || CRON_REQUEST_ID;
   try {
-    await triggerCampaignStatusActions(campaign, PREVIOUS_STATUS);
+    await runWithRequestContext({ requestId: correlationId }, () =>
+      triggerCampaignStatusActions(campaign, PREVIOUS_STATUS)
+    );
   } catch (err) {
     logger.error('Campaign status actions failed', {
       campaign_id: campaign.id,

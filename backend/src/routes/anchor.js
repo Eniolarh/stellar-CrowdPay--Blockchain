@@ -298,6 +298,29 @@ async function ensureAnchorAuth({ anchor, sessionRow, user, client = db }) {
   return { ...auth, refreshed: true };
 }
 
+/**
+ * @openapi
+ * /api/anchors/info:
+ *   get:
+ *     tags: [Anchors]
+ *     summary: List supported anchor assets and configured anchors
+ *     responses:
+ *       200:
+ *         description: Supported assets and public anchor metadata
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 supported_assets:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                 anchors:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ */
 router.get('/info', (_req, res) => {
   res.json({
     supported_assets: getSupportedAssetCodes(),
@@ -305,6 +328,46 @@ router.get('/info', (_req, res) => {
   });
 });
 
+/**
+ * @openapi
+ * /api/anchors/deposits/start:
+ *   post:
+ *     tags: [Anchors]
+ *     summary: Start an anchor deposit that funds a campaign contribution
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [campaign_id, amount, anchor_id]
+ *             properties:
+ *               campaign_id:
+ *                 type: string
+ *                 format: uuid
+ *               amount:
+ *                 type: string
+ *                 description: Contribution amount in the campaign asset
+ *               anchor_id:
+ *                 type: string
+ *     responses:
+ *       201:
+ *         description: Anchor deposit session created
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/AnchorDepositSession'
+ *       400:
+ *         description: Missing required fields
+ *       404:
+ *         description: Anchor, campaign or user wallet not found
+ *       409:
+ *         description: Anchor asset not enabled in Stellar asset config
+ *       503:
+ *         description: Anchor not configured or anchor flow failed
+ */
 router.post('/deposits/start', requireAuth, async (req, res) => {
   const { campaign_id, amount, anchor_id } = req.body || {};
   if (!campaign_id || !amount || !anchor_id) {
@@ -414,6 +477,29 @@ router.post('/deposits/start', requireAuth, async (req, res) => {
   }
 });
 
+/**
+ * @openapi
+ * /api/anchors/sep24/assets:
+ *   get:
+ *     tags: [Anchors]
+ *     summary: List SEP-24 supported assets and anchors
+ *     responses:
+ *       200:
+ *         description: Supported assets and public anchor metadata
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 supported_assets:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                 anchors:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ */
 router.get('/sep24/assets', (_req, res) => {
   res.json({
     supported_assets: getSupportedAssetCodes(),
@@ -421,6 +507,42 @@ router.get('/sep24/assets', (_req, res) => {
   });
 });
 
+/**
+ * @openapi
+ * /api/anchors/sep24/deposit:
+ *   post:
+ *     tags: [Anchors]
+ *     summary: Start a SEP-24 wallet deposit (no campaign contribution)
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [amount, anchor_id]
+ *             properties:
+ *               amount:
+ *                 type: string
+ *               anchor_id:
+ *                 type: string
+ *     responses:
+ *       201:
+ *         description: Anchor deposit session created
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/AnchorDepositSession'
+ *       400:
+ *         description: Missing required fields
+ *       404:
+ *         description: Anchor or user wallet not found
+ *       409:
+ *         description: Anchor asset not enabled in Stellar asset config
+ *       503:
+ *         description: Anchor not configured or anchor flow failed
+ */
 router.post('/sep24/deposit', requireAuth, async (req, res) => {
   const { amount, anchor_id } = req.body || {};
   if (!amount || !anchor_id) {
@@ -516,6 +638,35 @@ router.post('/sep24/deposit', requireAuth, async (req, res) => {
   }
 });
 
+/**
+ * @openapi
+ * /api/anchors/deposits/{id}:
+ *   get:
+ *     tags: [Anchors]
+ *     summary: Get an anchor deposit session and sync its status with the anchor
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     responses:
+ *       200:
+ *         description: Anchor deposit session (status refreshed from the anchor)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/AnchorDepositSession'
+ *       404:
+ *         description: Anchor deposit session not found
+ *       502:
+ *         description: Could not refresh anchor transaction status
+ *       503:
+ *         description: Anchor no longer available in the current configuration
+ */
 router.get('/deposits/:id', requireAuth, async (req, res) => {
   try {
     const result = await refreshAnchorDeposit({
@@ -539,6 +690,62 @@ router.get('/deposits/:id', requireAuth, async (req, res) => {
     });
   }
 });
+
+/**
+ * @openapi
+ * components:
+ *   schemas:
+ *     AnchorDepositSession:
+ *       type: object
+ *       properties:
+ *         id:
+ *           type: string
+ *           format: uuid
+ *         anchor_id:
+ *           type: string
+ *         anchor_transaction_id:
+ *           type: string
+ *         anchor_asset:
+ *           type: string
+ *         anchor_amount:
+ *           type: string
+ *         deposit_type:
+ *           type: string
+ *           enum: [campaign, wallet]
+ *         status:
+ *           type: string
+ *           enum: [pending_anchor, deposit_completed, contribution_submitted, completed, failed]
+ *         anchor_status:
+ *           type: string
+ *         interactive_url:
+ *           type: string
+ *           format: uri
+ *         last_error:
+ *           type: string
+ *           nullable: true
+ *         updated_at:
+ *           type: string
+ *           format: date-time
+ *         completed_at:
+ *           type: string
+ *           format: date-time
+ *           nullable: true
+ *         campaign_id:
+ *           type: string
+ *           format: uuid
+ *         contribution_amount:
+ *           type: string
+ *         contribution_tx_hash:
+ *           type: string
+ *           nullable: true
+ *         contribution_id:
+ *           type: string
+ *           format: uuid
+ *           nullable: true
+ *         conversion_quote:
+ *           type: object
+ *           nullable: true
+ */
 
 module.exports = router;
 module.exports.refreshAnchorDeposit = refreshAnchorDeposit;

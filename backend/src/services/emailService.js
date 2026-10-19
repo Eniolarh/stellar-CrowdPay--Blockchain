@@ -118,6 +118,45 @@ function getStellarExpertTxUrl(txHash) {
   return `https://stellar.expert/explorer/${network}/tx/${txHash}`;
 }
 
+/**
+ * Checks whether a user has opted in to email delivery for a notification type.
+ *
+ * Looks up the `notification_preferences` row for (user_id, type). Defaults to
+ * enabled when no row exists, or when the lookup fails, so that a missing
+ * preferences table/row never silently suppresses mail.
+ *
+ * @param {string} userId  User UUID
+ * @param {string} type    Notification type key (e.g. "contribution_receipt")
+ * @returns {Promise<boolean>}  true when email for this type is allowed
+ */
+async function isEmailTypeEnabled(userId, type) {
+  if (!userId || !type) {
+    return true;
+  }
+
+  try {
+    const { rows } = await db.query(
+      `SELECT email_enabled
+         FROM notification_preferences
+        WHERE user_id = $1 AND type = $2
+        LIMIT 1`,
+      [userId, type],
+    );
+
+    if (!rows.length) {
+      return true;
+    }
+
+    return rows[0].email_enabled !== false;
+  } catch (error) {
+    console.error(
+      "[Email Service] Failed to load notification preferences; defaulting to enabled.",
+      { userId, type, message: error?.message },
+    );
+    return true;
+  }
+}
+
 async function sendContributionReceipt({
   campaignId,
   txHash,
@@ -131,11 +170,23 @@ async function sendContributionReceipt({
   }
 
   const { rows: users } = await db.query(
-    "SELECT email, name FROM users WHERE wallet_public_key = $1",
+    "SELECT id, email, name FROM users WHERE wallet_public_key = $1",
     [senderPublicKey],
   );
 
   if (!users.length || !users[0].email) {
+    return;
+  }
+
+  const emailEnabled = await isEmailTypeEnabled(
+    users[0].id,
+    "contribution_receipt",
+  );
+
+  if (!emailEnabled) {
+    console.log(
+      `[receipt] Skipping email for user ${users[0].id}: contribution_receipt emails disabled`,
+    );
     return;
   }
 
@@ -175,4 +226,5 @@ module.exports = {
   reserveEmailSend,
   suppressEmail,
   sendContributionReceipt,
+  isEmailTypeEnabled,
 };

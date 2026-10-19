@@ -1,14 +1,21 @@
 # CrowdPay Backend API
 
-This file is the reference for every HTTP route the backend serves. The
-[route table](#route-table) must match the routers mounted in
-`src/index.js` exactly: `src/routes/apiDocs.test.js` fails when a route is added,
-removed or renamed without updating this table (and when a `###` heading below
-names a route that does not exist).
+> **Generated file — do not edit by hand.**
+> The swagger-jsdoc annotations in `src/routes/*.js` are the single source of
+> truth for the HTTP API. This file is generated from that spec by
+> `npm run docs:api` (`scripts/generate-api-docs.js`). CI runs
+> `npm run docs:api:check`, which regenerates the file and fails when the
+> committed copy differs, so any route change must be accompanied by the
+> regenerated `API.md`.
+
+The [route table](#route-table) is derived from the same spec and must match the
+routers mounted in `src/index.js` exactly: `src/routes/apiDocs.test.js` fails
+when a route is added, removed or renamed without updating the annotations (and
+when a `###` heading below names a route that does not exist).
 
 ## Interactive Swagger UI
 
-In development, browse the interactive API docs at `GET /api/docs`.
+Browse the interactive API docs at `GET /api/docs` (served from the same spec).
 
 ## Conventions
 
