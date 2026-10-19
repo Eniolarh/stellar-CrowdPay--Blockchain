@@ -313,10 +313,26 @@ router.post('/:id/approve/creator', requireAuth, async (req, res) => {
       if (!signed_xdr) return res.status(400).json({ error: 'signed_xdr is required for freighter users' });
 
       // Validate the signed_xdr contains a valid signature from the creator's public key
+      // and strictly matches the withdrawal request destination and amount
       try {
-        // validate signature by verifying at least one signature matches user's public key
-        const tx = require('@stellar/stellar-sdk').TransactionBuilder.fromXDR(signed_xdr, require('../config/stellar').networkPassphrase);
-        const signer = require('@stellar/stellar-sdk').Keypair.fromPublicKey(userRow.wallet_public_key);
+        const StellarSdk = require('@stellar/stellar-sdk');
+        const { networkPassphrase } = require('../config/stellar');
+        const tx = StellarSdk.TransactionBuilder.fromXDR(signed_xdr, networkPassphrase);
+
+        if (!tx.operations || tx.operations.length !== 1 || tx.operations[0].type !== 'payment') {
+          return res.status(422).json({ error: 'Signed transaction must contain exactly one payment operation' });
+        }
+
+        const op = tx.operations[0];
+        if (op.destination !== requestRow.destination_key) {
+          return res.status(422).json({ error: 'Signed transaction destination does not match withdrawal request' });
+        }
+
+        if (parseFloat(op.amount) !== parseFloat(requestRow.amount)) {
+          return res.status(422).json({ error: 'Signed transaction amount does not match withdrawal request' });
+        }
+
+        const signer = StellarSdk.Keypair.fromPublicKey(userRow.wallet_public_key);
         const signatureValid = tx.signatures.some((decorated) => {
           try {
             return signer.verify(tx.hash(), decorated.signature());
@@ -328,7 +344,7 @@ router.post('/:id/approve/creator', requireAuth, async (req, res) => {
           return res.status(422).json({ error: 'Signed transaction does not include a valid signature by the creator' });
         }
       } catch (err) {
-        return res.status(422).json({ error: 'Invalid signed_xdr' });
+        return res.status(422).json({ error: err.message || 'Invalid signed_xdr' });
       }
 
       signedXdr = signed_xdr;
@@ -443,6 +459,25 @@ const platformApproveHandler = async (req, res) => {
     return res.status(410).json({
       error: 'Withdrawal XDR has expired. The creator must cancel and submit a new withdrawal request.',
     });
+  }
+
+  // Validate transaction operations match requestRow before platform co-signing
+  try {
+    const StellarSdk = require('@stellar/stellar-sdk');
+    const { networkPassphrase } = require('../config/stellar');
+    const txToVerify = StellarSdk.TransactionBuilder.fromXDR(requestRow.unsigned_xdr, networkPassphrase);
+    if (!txToVerify.operations || txToVerify.operations.length !== 1 || txToVerify.operations[0].type !== 'payment') {
+      return res.status(422).json({ error: 'Transaction must contain exactly one payment operation' });
+    }
+    const op = txToVerify.operations[0];
+    if (op.destination !== requestRow.destination_key) {
+      return res.status(422).json({ error: 'Transaction destination does not match approved withdrawal request' });
+    }
+    if (parseFloat(op.amount) !== parseFloat(requestRow.amount)) {
+      return res.status(422).json({ error: 'Transaction amount does not match approved withdrawal request' });
+    }
+  } catch (err) {
+    return res.status(422).json({ error: 'Malformed withdrawal transaction XDR' });
   }
 
   const signedXdr = signTransactionXdr({

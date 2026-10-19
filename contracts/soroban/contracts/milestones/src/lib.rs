@@ -1,11 +1,29 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Symbol, Vec, IntoVal
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Symbol, Vec, IntoVal
 };
 
 // ~1 year in ledgers (5s per ledger)
 const INSTANCE_TTL_BUMP: u32 = 6_312_000;
 const INSTANCE_TTL_THRESHOLD: u32 = 100_000;
+
+pub const MAX_MILESTONES: u32 = 32;
+pub const TOTAL_BPS: u32 = 10000;
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum MilestoneError {
+    AlreadyInitialized = 1,
+    NotInitialized = 2,
+    EmptyPlan = 3,
+    InvalidBps = 4,
+    TotalBpsMismatch = 5,
+    MaxMilestonesExceeded = 6,
+    IndexOutOfBounds = 7,
+    InvalidStatus = 8,
+    Unauthorized = 9,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[contracttype]
@@ -36,12 +54,13 @@ pub enum DataKey {
     Released,
 }
 
-pub const TOTAL_BPS: u32 = 10000;
-
-/// Validates a milestone plan: non-empty, every entry > 0 bps, sum == 10000.
+/// Validates a milestone plan: non-empty, max 32 entries, every entry > 0 bps, sum == 10000.
 pub fn validate_plan(milestones: &Vec<Milestone>) {
     if milestones.is_empty() {
         panic!("At least one milestone required");
+    }
+    if milestones.len() > MAX_MILESTONES {
+        panic!("Milestones plan exceeds maximum allowed limit of 32");
     }
     let mut total_bps: u64 = 0;
     for m in milestones.iter() {
@@ -65,14 +84,8 @@ pub fn release_amount_for(total_raised: i128, release_bps: u32, already_released
     }
 }
 
-// Define the interface for the Escrow contract
 #[contract]
 pub struct MilestonesContract;
-
-// Note: We use invoke_contract for cross-contract calls to avoid strict build dependencies
-// on the escrow wasm during the initial build of this contract.
-// Note: If the wasm is not available yet, we can use a manual client definition.
-// Since we are building this together, I'll use a manual client to avoid build order issues.
 
 #[contractimpl]
 impl MilestonesContract {
@@ -206,4 +219,3 @@ impl MilestonesContract {
 
 #[cfg(test)]
 mod test;
-
