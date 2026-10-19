@@ -11,6 +11,52 @@ const REQUIRED = [
 ];
 const STORAGE_VARS = ['STORAGE_BUCKET', 'STORAGE_ENDPOINT'];
 
+const LOG_LEVELS = ['error', 'warn', 'info', 'http', 'verbose', 'debug', 'silly'];
+const DEFAULT_LOG_LEVEL = 'info';
+
+function parseModuleOverrides(raw) {
+  const overrides = {};
+  if (!raw) return overrides;
+  raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .forEach((entry) => {
+      const idx = entry.indexOf('=');
+      if (idx === -1) {
+        process.stderr.write(
+          `[crowdpay] Warning: ignoring malformed LOG_LEVEL_MODULES entry "${entry}" (expected module=level)\n`
+        );
+        return;
+      }
+      const moduleName = entry.slice(0, idx).trim();
+      const level = entry.slice(idx + 1).trim().toLowerCase();
+      if (!moduleName || !LOG_LEVELS.includes(level)) {
+        process.stderr.write(
+          `[crowdpay] Warning: ignoring invalid LOG_LEVEL_MODULES entry "${entry}"\n`
+        );
+        return;
+      }
+      overrides[moduleName] = level;
+    });
+  return overrides;
+}
+
+function resolveLogConfig() {
+  const rawLevel = (process.env.LOG_LEVEL || '').trim().toLowerCase();
+  let level = DEFAULT_LOG_LEVEL;
+  if (rawLevel) {
+    if (LOG_LEVELS.includes(rawLevel)) {
+      level = rawLevel;
+    } else {
+      process.stderr.write(
+        `[crowdpay] Warning: invalid LOG_LEVEL "${process.env.LOG_LEVEL}" — falling back to "${DEFAULT_LOG_LEVEL}"\n`
+      );
+    }
+  }
+  return { level, moduleOverrides: parseModuleOverrides(process.env.LOG_LEVEL_MODULES) };
+}
+
 // Published in backend/.env.example (and CI) so local dev boots out of the box.
 // They must never reach production or mainnet.
 const DEV_ONLY_VALUES = {
@@ -69,6 +115,16 @@ function validateEnv() {
       '[crowdpay] Warning: JWT_EXPIRES_IN not set — access tokens will use the default expiry (15m)\n'
     );
   }
+
+  // Validate logging configuration (warns and falls back to a safe default on bad input)
+  resolveLogConfig();
 }
 
-module.exports = { validateEnv, REQUIRED, STORAGE_VARS, DEV_ONLY_VALUES };
+module.exports = {
+  validateEnv,
+  REQUIRED,
+  DEV_ONLY_VALUES,
+  LOG_LEVELS,
+  DEFAULT_LOG_LEVEL,
+  resolveLogConfig,
+};

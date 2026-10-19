@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const dns = require('dns').promises;
 const net = require('net');
 const db = require('../config/database');
+const { captureContext, runWithCapturedContext } = require('../config/requestContext');
 
 /**
  * SSRF protection — validate a webhook callback URL before making an outbound request.
@@ -310,9 +311,14 @@ async function scheduleRetry(deliveryId, attemptJustUsed, errMsg, httpStatus, sn
     [deliveryId, nextAt.toISOString(), errMsg, httpStatus, snippet]
   );
 
+  // Capture the originating request context so the deferred retry re-enters
+  // the same AsyncLocalStorage scope and its logs carry the request_id.
+  const captured = captureContext();
   setTimeout(() => {
-    processDelivery(deliveryId).catch((err) =>
-      console.error(`[webhooks] retry ${deliveryId}:`, err.message)
+    runWithCapturedContext(captured, () =>
+      processDelivery(deliveryId).catch((err) =>
+        console.error(`[webhooks] retry ${deliveryId}:`, err.message)
+      )
     );
   }, delay);
 }
@@ -464,9 +470,14 @@ async function scheduleCampaignWebhookRetry(deliveryId, attemptJustUsed, errMsg,
     [deliveryId, nextAt.toISOString(), errMsg, httpStatus]
   );
 
+  // Capture the originating request context so the deferred retry re-enters
+  // the same AsyncLocalStorage scope and its logs carry the request_id.
+  const captured = captureContext();
   setTimeout(() => {
-    processCampaignWebhookDelivery(deliveryId).catch((err) =>
-      console.error(`[campaign-webhooks] retry ${deliveryId}:`, err.message)
+    runWithCapturedContext(captured, () =>
+      processCampaignWebhookDelivery(deliveryId).catch((err) =>
+        console.error(`[campaign-webhooks] retry ${deliveryId}:`, err.message)
+      )
     );
   }, delay);
 }
@@ -487,9 +498,14 @@ async function processDueCampaignWebhookRetries() {
 }
 
 function startWebhookRetryPoller() {
+  // The poller runs outside any request scope; give it a synthetic context so
+  // its logs are identifiable and correlation ids are never undefined.
+  const pollerContext = { requestId: 'webhook-poller' };
   setInterval(() => {
-    processDueRetries().catch((e) => console.error('[webhooks] poller:', e.message));
-    processDueCampaignWebhookRetries().catch((e) => console.error('[campaign-webhooks] poller:', e.message));
+    runWithCapturedContext(pollerContext, () => {
+      processDueRetries().catch((e) => console.error('[webhooks] poller:', e.message));
+      processDueCampaignWebhookRetries().catch((e) => console.error('[campaign-webhooks] poller:', e.message));
+    });
   }, 5000);
 }
 
