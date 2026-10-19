@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, token};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, token};
 
 // ~1 year in ledgers (5s per ledger): 6_312_000. Use a safe ceiling.
 const INSTANCE_TTL_BUMP: u32 = 6_312_000;
@@ -9,6 +9,19 @@ const PERSISTENT_TTL_THRESHOLD: u32 = 100_000;
 
 #[cfg(test)]
 mod test;
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum EscrowError {
+    AlreadyInitialized = 1,
+    NotInitialized = 2,
+    DeadlinePassed = 3,
+    DeadlineNotPassed = 4,
+    CampaignSucceeded = 5,
+    NoContribution = 6,
+    Unauthorized = 7,
+}
 
 #[derive(Clone)]
 #[contracttype]
@@ -47,18 +60,19 @@ impl EscrowContract {
     pub fn deposit(env: Env, from: Address, amount: i128) {
         from.require_auth();
 
-        let deadline: u64 = env.storage().instance().get(&DataKey::Deadline).unwrap();
+        let deadline: u64 = env.storage().instance().get(&DataKey::Deadline).expect("Not initialized");
         if env.ledger().timestamp() >= deadline {
             panic!("Deadline has passed");
         }
 
-        let asset: Address = env.storage().instance().get(&DataKey::Asset).unwrap();
+        let asset: Address = env.storage().instance().get(&DataKey::Asset).expect("Not initialized");
         let client = token::Client::new(&env, &asset);
         client.transfer(&from, &env.current_contract_address(), &amount);
 
         let balance_key = DataKey::Balances(from.clone());
         let current_balance: i128 = env.storage().persistent().get(&balance_key).unwrap_or(0);
-        env.storage().persistent().set(&balance_key, &(current_balance + amount));
+        let new_balance = current_balance + amount;
+        env.storage().persistent().set(&balance_key, &new_balance);
         env.storage().persistent().extend_ttl(&balance_key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_BUMP);
 
         let total_raised: i128 = env.storage().instance().get(&DataKey::TotalRaised).unwrap_or(0);
@@ -66,39 +80,52 @@ impl EscrowContract {
         env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_BUMP);
     }
 
-    pub fn approve_withdrawal(env: Env, release_amount: i128) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+    pub fn withdraw(env: Env, to: Address, amount: i128) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Not initialized");
         admin.require_auth();
 
-        let approved: i128 = env.storage().instance().get(&DataKey::ApprovedWithdrawal).unwrap_or(0);
-        env.storage().instance().set(&DataKey::ApprovedWithdrawal, &(approved + release_amount));
+        let deadline: u64 = env.storage().instance().get(&DataKey::Deadline).expect("Not initialized");
+        let total_raised: i128 = env.storage().instance().get(&DataKey::TotalRaised).unwrap_or(0);
+        let target: i128 = env.storage().instance().get(&DataKey::Target).expect("Not initialized");
+
+        let target_reached = total_raised >= target;
+        let deadline_passed = env.ledger().timestamp() >= deadline;
+
+        if !target_reached && !deadline_passed {
+            panic!("Cannot withdraw: target not reached and deadline has not passed");
+        }
+
+        if !target_reached && deadline_passed {
+            panic!("Campaign failed, cannot withdraw funds");
+        }
+
+        let asset: Address = env.storage().instance().get(&DataKey::Asset).expect("Not initialized");
+        let client = token::Client::new(&env, &asset);
+        client.transfer(&env.current_contract_address(), &to, &amount);
         env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_BUMP);
     }
 
-    pub fn execute_withdrawal(env: Env, to: Address, release_amount: i128) {
-        // Ensure caller is verified, could be admin or anyone as long as withdrawal is approved
-        let mut approved: i128 = env.storage().instance().get(&DataKey::ApprovedWithdrawal).unwrap_or(0);
-        if approved < release_amount {
-            panic!("Insufficient approved amount");
+    pub fn approve_milestone_withdrawal(env: Env, caller: Address, amount: i128) {
+        caller.require_auth();
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Not initialized");
+        if caller != admin {
+            panic!("Unauthorized caller");
         }
 
-        let asset: Address = env.storage().instance().get(&DataKey::Asset).unwrap();
-        let client = token::Client::new(&env, &asset);
-        client.transfer(&env.current_contract_address(), &to, &release_amount);
-
-        approved -= release_amount;
+        let current_approved: i128 = env.storage().instance().get(&DataKey::ApprovedWithdrawal).unwrap_or(0);
+        let approved = current_approved + amount;
         env.storage().instance().set(&DataKey::ApprovedWithdrawal, &approved);
         env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_BUMP);
     }
 
     pub fn refund(env: Env, contributor: Address) {
-        let deadline: u64 = env.storage().instance().get(&DataKey::Deadline).unwrap();
+        let deadline: u64 = env.storage().instance().get(&DataKey::Deadline).expect("Not initialized");
         if env.ledger().timestamp() < deadline {
             panic!("Deadline has not passed");
         }
 
         let total_raised: i128 = env.storage().instance().get(&DataKey::TotalRaised).unwrap_or(0);
-        let target: i128 = env.storage().instance().get(&DataKey::Target).unwrap();
+        let target: i128 = env.storage().instance().get(&DataKey::Target).expect("Not initialized");
 
         if total_raised >= target {
             panic!("Campaign succeeded, refunds unavailable");
@@ -110,12 +137,15 @@ impl EscrowContract {
             panic!("No contribution to refund");
         }
 
-        let asset: Address = env.storage().instance().get(&DataKey::Asset).unwrap();
+        let asset: Address = env.storage().instance().get(&DataKey::Asset).expect("Not initialized");
         let client = token::Client::new(&env, &asset);
         client.transfer(&env.current_contract_address(), &contributor, &amount);
 
+        // Decrement TotalRaised so accounting reflects refunds
+        let new_total = total_raised.saturating_sub(amount);
+        env.storage().instance().set(&DataKey::TotalRaised, &new_total);
+
         env.storage().persistent().set(&balance_key, &0i128);
-        // No TTL bump needed on zeroed-out balance; it can safely expire.
         env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_BUMP);
     }
 
@@ -126,6 +156,6 @@ impl EscrowContract {
 
     pub fn get_asset(env: Env) -> Address {
         env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_BUMP);
-        env.storage().instance().get(&DataKey::Asset).unwrap()
+        env.storage().instance().get(&DataKey::Asset).expect("Not initialized")
     }
 }
