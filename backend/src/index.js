@@ -38,7 +38,14 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json({ limit: '50kb' }));
+app.use(
+  express.json({
+    limit: '50kb',
+    verify: (req, _res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
 app.use(cookieParser());
 app.use(Sentry.sentryRequestMiddleware ? Sentry.sentryRequestMiddleware() : (req, res, next) => next());
 app.use(requestIdMiddleware);

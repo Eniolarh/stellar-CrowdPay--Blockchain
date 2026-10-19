@@ -7,15 +7,22 @@ on:
     types:
       - completed
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   deploy:
     name: Deploy to Production
     runs-on: ubuntu-latest
+    environment: production
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
