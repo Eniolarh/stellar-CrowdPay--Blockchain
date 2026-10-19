@@ -215,23 +215,37 @@ router.post('/request', requireAuth, idempotency, withdrawalValidation, validate
   );
   const creatorPublicKey = creatorRows[0].wallet_public_key;
 
-  const multisig = await getAccountMultisigConfig(campaign.wallet_public_key);
-  if (
-    multisig.thresholds.med_threshold < 2 ||
-    !hasSigner(multisig.signers, creatorPublicKey) ||
-    !hasSigner(multisig.signers, PLATFORM_PUBLIC_KEY)
-  ) {
-    return res.status(422).json({
-      error: 'Campaign wallet multisig config invalid: creator + platform signatures are required',
-    });
-  }
+  let multisig;
+  let xdr;
+  try {
+    multisig = await getAccountMultisigConfig(campaign.wallet_public_key);
+    if (
+      multisig.thresholds.med_threshold < 2 ||
+      !hasSigner(multisig.signers, creatorPublicKey) ||
+      !hasSigner(multisig.signers, PLATFORM_PUBLIC_KEY)
+    ) {
+      return res.status(422).json({
+        error: 'Campaign wallet multisig config invalid: creator + platform signatures are required',
+      });
+    }
 
-  const xdr = await buildWithdrawalTransaction({
-    campaignWalletPublicKey: campaign.wallet_public_key,
-    destinationPublicKey: destination_key,
-    amount,
-    asset: campaign.asset_type,
-  });
+    xdr = await buildWithdrawalTransaction({
+      campaignWalletPublicKey: campaign.wallet_public_key,
+      destinationPublicKey: destination_key,
+      amount,
+      asset: campaign.asset_type,
+    });
+  } catch (err) {
+    if (err instanceof CircuitOpenError) {
+      logger.warn('Withdrawal request blocked by Stellar circuit breaker', {
+        campaign_id,
+        error: err.message,
+      });
+      return res.status(503).json({ error: CIRCUIT_OPEN_MESSAGE, retryable: true });
+    }
+    logger.error('Withdrawal request Stellar preparation failed', { error: err.message, campaign_id });
+    return res.status(502).json({ error: 'Could not prepare withdrawal transaction on Stellar' });
+  }
 
   const client = await db.connect();
   try {
@@ -363,6 +377,13 @@ router.post('/:id/approve/creator', requireAuth, async (req, res) => {
       );
     }
   } catch (err) {
+    if (err instanceof CircuitOpenError) {
+      logger.warn('Creator withdrawal signing blocked by Stellar circuit breaker', {
+        withdrawal_id: req.params.id,
+        error: err.message,
+      });
+      return res.status(503).json({ error: CIRCUIT_OPEN_MESSAGE, retryable: true });
+    }
     logger.error('Creator withdrawal signing failed', {
       withdrawal_id: req.params.id,
       error: err.message,
@@ -531,6 +552,13 @@ const platformApproveHandler = async (req, res) => {
     try {
       txHash = await submitSignedWithdrawal({ xdr: signedXdr });
     } catch (err) {
+      if (err instanceof CircuitOpenError) {
+        logger.warn('Withdrawal submission blocked by Stellar circuit breaker', {
+          withdrawal_id: req.params.id,
+          error: err.message,
+        });
+        return res.status(503).json({ error: CIRCUIT_OPEN_MESSAGE, retryable: true });
+      }
       submitError = err;
     }
   }
@@ -541,6 +569,14 @@ const platformApproveHandler = async (req, res) => {
     try {
       landed = await transactionExistsOnHorizon(expectedHash);
     } catch (lookupErr) {
+      if (lookupErr instanceof CircuitOpenError) {
+        logger.warn('Withdrawal reconciliation blocked by Stellar circuit breaker', {
+          withdrawal_id: req.params.id,
+          tx_hash: expectedHash,
+          error: lookupErr.message,
+        });
+        return res.status(503).json({ error: CIRCUIT_OPEN_MESSAGE, retryable: true });
+      }
       logger.error('Withdrawal submission outcome unknown', {
         withdrawal_id: req.params.id,
         tx_hash: expectedHash,

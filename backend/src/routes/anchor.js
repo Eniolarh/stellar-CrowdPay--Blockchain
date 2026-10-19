@@ -464,6 +464,16 @@ router.post('/deposits/start', requireAuth, async (req, res) => {
       anchor: publicAnchorInfo(anchor),
     });
   } catch (err) {
+    if (err.code === '23505') {
+      logger.warn('Anchor deposit start rejected: duplicate active claim', {
+        anchor_id,
+        campaign_id,
+        user_id: req.user.userId,
+      });
+      return res.status(409).json({
+        error: 'A deposit for this campaign is already in progress',
+      });
+    }
     const status = err.statusCode || 503;
     logger.error('Anchor deposit start failed', {
       anchor_id,
@@ -626,6 +636,15 @@ router.post('/sep24/deposit', requireAuth, async (req, res) => {
       anchor: publicAnchorInfo(anchor),
     });
   } catch (err) {
+    if (err.code === '23505') {
+      logger.warn('SEP-24 wallet deposit start rejected: duplicate active claim', {
+        anchor_id,
+        user_id: req.user.userId,
+      });
+      return res.status(409).json({
+        error: 'A deposit is already in progress',
+      });
+    }
     const status = err.statusCode || 503;
     logger.error('SEP-24 wallet deposit start failed', {
       anchor_id,
@@ -681,6 +700,14 @@ router.get('/deposits/:id', requireAuth, async (req, res) => {
     }
     res.json(mapSessionForClient(result.session));
   } catch (err) {
+    if (err.code === '23505') {
+      logger.warn('Anchor deposit status sync rejected: duplicate active claim', {
+        anchor_deposit_id: session.id,
+      });
+      return res.status(409).json({
+        error: 'A deposit for this campaign is already in progress',
+      });
+    }
     logger.error('Anchor deposit status sync failed', {
       anchor_deposit_id: req.params.id,
       error: err.message,

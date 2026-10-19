@@ -17,6 +17,13 @@ const {
   getSupportedAssetCodes,
   isBadSequenceError,
 } = require("../services/stellarService");
+const { CircuitOpenError } = require('../services/circuitBreaker');
+
+const STELLAR_UNAVAILABLE_MESSAGE = 'Stellar network temporarily unavailable, retry shortly';
+
+function isCircuitOpenError(err) {
+  return err instanceof CircuitOpenError || err?.name === 'CircuitOpenError' || err?.code === 'CIRCUIT_OPEN';
+}
 const {
   insertContributionSubmitted,
 } = require("../services/stellarTransactionService");
@@ -331,11 +338,20 @@ router.get('/quote', requireAuth, contributionQuoteValidation, validateRequest, 
    */
   const { send_asset, dest_asset, dest_amount } = req.query;
 
-  const paths = await getPathPaymentQuote({
-    sendAsset: send_asset,
-    destAsset: dest_asset,
-    destAmount: dest_amount,
-  });
+  let paths;
+  try {
+    paths = await getPathPaymentQuote({
+      sendAsset: send_asset,
+      destAsset: dest_asset,
+      destAmount: dest_amount,
+    });
+  } catch (err) {
+    if (isCircuitOpenError(err)) {
+      logger.warn('Contribution quote blocked by open circuit breaker', { error: err.message });
+      return res.status(503).json({ error: STELLAR_UNAVAILABLE_MESSAGE });
+    }
+    throw err;
+  }
 
   if (!paths.length) {
     return res.status(404).json({ error: 'No conversion path found for requested assets' });
@@ -458,6 +474,14 @@ router.post('/prepare', requireAuth, prepareLimiter, contributionValidation, val
       return res.status(422).json({ error: err.message });
     }
 
+    if (isCircuitOpenError(err)) {
+      logger.warn('Freighter contribution preparation blocked by open circuit breaker', {
+        campaign_id,
+        error: err.message,
+      });
+      return res.status(503).json({ error: STELLAR_UNAVAILABLE_MESSAGE });
+    }
+
     logger.error('Freighter contribution preparation failed', { campaign_id, error: err.message });
     return res.status(503).json({
       error: 'Could not prepare the Stellar transaction right now. Please try again.',
@@ -556,6 +580,13 @@ router.post('/submit-signed', requireAuth, submitSignedLimiter, idempotency, asy
   try {
     txHash = await submitPreparedTransaction(signed_xdr);
   } catch (err) {
+    if (isCircuitOpenError(err)) {
+      logger.warn('Freighter contribution submission blocked by open circuit breaker', {
+        campaign_id: prepared.campaign_id,
+        error: err.message,
+      });
+      return res.status(503).json({ error: STELLAR_UNAVAILABLE_MESSAGE });
+    }
     logger.error('Freighter contribution submission failed', {
       campaign_id: prepared.campaign_id,
       error: err.message,
@@ -698,6 +729,13 @@ if (
           : {}),
       });
     } catch (err) {
+      if (isCircuitOpenError(err)) {
+        logger.warn('Custodial contribution blocked by open circuit breaker', {
+          campaign_id,
+          error: err.message,
+        });
+        return res.status(503).json({ error: STELLAR_UNAVAILABLE_MESSAGE });
+      }
       if (err.statusCode === 422) {
         return res.status(422).json({ error: err.message });
       }

@@ -84,6 +84,22 @@ test('backend/.env.example sets every hard-required variable', () => {
   assert.deepEqual(missing, []);
 });
 
+test('REQUIRED and backend/.env.example are in bidirectional parity', () => {
+  const { set } = parseExample(BACKEND_EXAMPLE);
+  const read = envVarsReadByBackend();
+
+  // Every REQUIRED key must be present and uncommented in the example.
+  const missingRequired = REQUIRED.filter((key) => !set.has(key)).sort();
+  assert.deepEqual(missingRequired, [], 'REQUIRED keys missing from backend/.env.example');
+
+  // Every active key in the example must be REQUIRED, a documented optional
+  // (read by the backend or consumed by containers), never an unknown key.
+  const unexpected = [...set.keys()]
+    .filter((key) => !REQUIRED.includes(key) && !read.has(key) && !NON_BACKEND_KEYS.includes(key))
+    .sort();
+  assert.deepEqual(unexpected, [], 'backend/.env.example documents keys the backend neither requires nor reads');
+});
+
 test('backend/.env.example round-trips through startup validation', () => {
   const result = bootWithExample();
   assert.equal(result.status, 0, result.stderr);
@@ -133,6 +149,11 @@ test('root .env.example only carries docker compose DB credentials and defers to
   assert.deepEqual([...root.set.keys()].sort(), [...NON_BACKEND_KEYS].sort());
   assert.deepEqual([...root.commented], []);
   assert.match(fs.readFileSync(ROOT_EXAMPLE, 'utf8'), /backend\/\.env\.example/);
+
+  // The root file must not duplicate any REQUIRED backend variable; those live
+  // in backend/.env.example only.
+  const leaked = REQUIRED.filter((key) => root.set.has(key) || root.commented.has(key)).sort();
+  assert.deepEqual(leaked, [], 'REQUIRED backend vars must not appear in the root .env.example');
 });
 
 test('root and backend examples agree on database credentials', () => {
