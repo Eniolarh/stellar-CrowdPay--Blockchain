@@ -234,6 +234,7 @@ Deprecated aliases still respond but will be removed; new integrations must use 
 |---|---|---|---|
 | `GET` | `/api/config` | Public | `{ platform_fee_bps }` |
 | `GET` | `/api/stats` | Public | Landing-page totals (cached 60 s) |
+| `GET` | `/api/seo/head` | Public | HTML head fragment for campaign pages, injected by nginx SSI so crawlers see per-campaign `og:*`/`twitter:*` tags (cached 60 s) |
 | `GET` | `/health` | Public | Liveness + database connectivity; returns `{ "status": "ok" }` |
 | `GET` | `/health/ledger` | Public | Horizon stream health |
 

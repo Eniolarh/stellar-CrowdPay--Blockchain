@@ -641,10 +641,13 @@ export default function Campaign() {
   }
 
   useEffect(() => {
-    if (!campaign) return;
+    if (!campaign) return undefined;
     document.title = `${campaign.title} | CrowdPay`;
 
-    // Basic meta tag updates (SPA approach)
+    // Basic meta tag updates (SPA approach). Every element we touch is tracked
+    // so navigation away can reset the head — tags injected server-side by
+    // nginx SSI are campaign-specific too and must not outlive this page.
+    const managedTags = [];
     const updateMeta = (name, content, property = false) => {
       let el = document.querySelector(
         property ? `meta[property="${name}"]` : `meta[name="${name}"]`,
@@ -655,6 +658,7 @@ export default function Campaign() {
         else el.setAttribute("name", name);
         document.head.appendChild(el);
       }
+      managedTags.push(el);
       el.setAttribute("content", content);
     };
 
@@ -669,6 +673,11 @@ export default function Campaign() {
     updateMeta("twitter:card", "summary_large_image");
     updateMeta("twitter:title", campaign.title);
     updateMeta("twitter:description", campaign.description || "");
+
+    return () => {
+      document.title = "CrowdPay";
+      managedTags.forEach((el) => el.remove());
+    };
   }, [campaign]);
 
   if (loadError && !campaign) {

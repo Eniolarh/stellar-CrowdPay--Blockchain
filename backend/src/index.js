@@ -226,6 +226,7 @@ app.use('/api/webhooks', textBody, require('./routes/webhooks'));
 app.use('/api/milestones', require('./routes/milestones'));
 app.use('/api', require('./routes/disputes'));
 app.use('/api/notifications', require('./routes/notifications'));
+app.use('/api', require('./routes/seo'));
 
 app.get('/health', async (_, res) => {
   try {
