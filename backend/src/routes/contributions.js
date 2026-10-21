@@ -12,6 +12,7 @@ const {
   buildUnsignedContributionPayment,
   buildUnsignedContributionPathPayment,
   submitPreparedTransaction,
+  submitWithFeeBumpFallback,
   getPathPaymentQuote,
   getSupportedAssetCodes,
   isBadSequenceError,
@@ -447,7 +448,7 @@ router.post('/submit-signed', requireAuth, submitSignedLimiter, asyncHandler(asy
 
   let txHash;
   try {
-    txHash = await submitPreparedTransaction(signed_xdr);
+    txHash = await submitWithFeeBumpFallback(signed_xdr);
   } catch (err) {
     logger.error('Freighter contribution submission failed', {
       campaign_id: prepared.campaign_id,

@@ -641,6 +641,73 @@ async function submitPreparedTransaction(xdr) {
   return result.hash;
 }
 
+/**
+ * Returns true when the Horizon error indicates the transaction fee was too low
+ * for the current network surge pricing.
+ */
+function isInsufficientFeeError(err) {
+  const resultCodes = err?.response?.data?.extras?.result_codes;
+  return resultCodes?.transaction === 'tx_insufficient_fee';
+}
+
+/**
+ * Submit a prepared (signed) transaction with automatic fee-bump retry.
+ *
+ * If Horizon rejects the inner transaction with `tx_insufficient_fee` (common
+ * during network surge periods), a fee-bump envelope is built around the original
+ * transaction and submitted using the platform keypair as the fee-payer.  The
+ * inner transaction does NOT need to be re-signed — only the fee-bump envelope
+ * requires a signature.
+ *
+ * On testnet, where fees are negligible, this code path is never triggered.
+ * Non-fee errors (bad sequence, account not found, etc.) propagate unchanged.
+ *
+ * @param {string} innerXdr — Base64 XDR of the signed inner transaction.
+ * @returns {Promise<string>} Transaction hash (fee-bump hash when retried).
+ */
+async function submitWithFeeBumpFallback(innerXdr) {
+  try {
+    return await submitPreparedTransaction(innerXdr);
+  } catch (err) {
+    if (!isInsufficientFeeError(err)) {
+      // Surface bad-sequence errors with a clear message to help the caller
+      if (isBadSequenceError(err)) {
+        const e = new Error(
+          'Transaction rejected: sequence number mismatch (tx_bad_seq). ' +
+          'The account sequence may have been incremented by a concurrent request. ' +
+          'Please retry the contribution.'
+        );
+        e.isBadSeq = true;
+        throw e;
+      }
+      throw err;
+    }
+
+    // Fee is too low — wrap in a fee-bump transaction signed by the platform.
+    console.warn('[stellar] Fee too low, retrying with fee-bump...');
+    logger.warn('[stellar] tx_insufficient_fee — retrying with fee-bump transaction', {
+      stellar_network: process.env.STELLAR_NETWORK,
+    });
+
+    const innerTx = TransactionBuilder.fromXDR(innerXdr, networkPassphrase);
+    const platformAccount = await server.loadAccount(PLATFORM_KEYPAIR.publicKey());
+
+    // Multiply the current base fee by 10 to ensure we clear the network surge.
+    const bumpFee = String(parseInt(BASE_FEE) * 10);
+
+    const feeBump = TransactionBuilder.buildFeeBumpTransaction(
+      PLATFORM_KEYPAIR,
+      bumpFee,
+      innerTx,
+      networkPassphrase
+    );
+    feeBump.sign(PLATFORM_KEYPAIR);
+
+    const result = await server.submitTransaction(feeBump);
+    return result.hash;
+  }
+}
+
 async function submitSignedWithdrawal({ xdr }) {
   return submitPreparedTransaction(xdr);
 }
@@ -778,6 +845,7 @@ module.exports = {
   submitPayment,
   submitPathPayment,
   submitPreparedTransaction,
+  submitWithFeeBumpFallback,
   getPathPaymentQuote,
   validateWithdrawalParams,
   buildWithdrawalTransaction,
