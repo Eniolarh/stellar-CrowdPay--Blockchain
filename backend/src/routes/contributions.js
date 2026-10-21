@@ -37,6 +37,7 @@ const {
 const { listUserContributions } = require('../services/userDashboardService');
 const asyncHandler = require('../utils/asyncHandler');
 const { parseAmountToStroops, formatStroops } = require('../utils/amounts');
+const { sendErrorResponse } = require('../middleware/errorHandler');
 
 const SUPPORTED_ASSETS = getSupportedAssetCodes();
 const PREPARED_CONTRIBUTION_EXPIRES_IN = '10m';
@@ -168,7 +169,7 @@ function validateSubmittedContributionXdr({ signedXdr, unsignedXdr, senderPublic
 
 router.get('/mine', requireAuth, asyncHandler(async (req, res) => {
   const rows = await listUserContributions(req.user.userId);
-  if (rows === null) return res.status(404).json({ error: 'User not found' });
+  if (rows === null) return sendErrorResponse(res, 404, 'User not found');
   res.json(rows);
 }));
 
@@ -232,7 +233,7 @@ router.get('/campaign/:campaignId', publicContributionReadLimiter, optionalAuth,
 // Deprecated alias of GET /mine (see API.md).
 router.get('/', requireAuth, asyncHandler(async (req, res) => {
   const rows = await listUserContributions(req.user.userId);
-  if (rows === null) return res.status(404).json({ error: 'User not found' });
+  if (rows === null) return sendErrorResponse(res, 404, 'User not found');
   res.json(rows);
 }));
 
@@ -251,7 +252,7 @@ router.get('/finalization/:txHash', requireAuth, asyncHandler(async (req, res) =
      WHERE st.tx_hash = $1 AND st.kind = 'contribution'`,
     [txHash]
   );
-  if (!rows.length) return res.status(404).json({ error: 'No contribution transaction found' });
+  if (!rows.length) return sendErrorResponse(res, 404, 'No contribution transaction found');
   const row = rows[0];
 
   const { rows: userRows } = await db.query(
@@ -265,7 +266,7 @@ router.get('/finalization/:txHash', requireAuth, asyncHandler(async (req, res) =
   const isPlatform = req.user.role === 'admin';
 
   if (!isInitiator && !isCreator && !isContributor && !isPlatform) {
-    return res.status(403).json({ error: 'Not authorized to view this transaction' });
+    return sendErrorResponse(res, 403, 'Not authorized to view this transaction');
   }
 
   let finalizationStatus = 'awaiting_ledger';
@@ -348,13 +349,13 @@ router.get('/quote', requireAuth, contributionQuoteValidation, validateRequest, 
   } catch (err) {
     if (isCircuitOpenError(err)) {
       logger.warn('Contribution quote blocked by open circuit breaker', { error: err.message });
-      return res.status(503).json({ error: STELLAR_UNAVAILABLE_MESSAGE });
+      return sendErrorResponse(res, 503, STELLAR_UNAVAILABLE_MESSAGE);
     }
     throw err;
   }
 
   if (!paths.length) {
-    return res.status(404).json({ error: 'No conversion path found for requested assets' });
+    return sendErrorResponse(res, 404, 'No conversion path found for requested assets');
   }
 
   const bestPath = paths[0];
@@ -381,29 +382,21 @@ router.get('/quote', requireAuth, contributionQuoteValidation, validateRequest, 
 router.post('/prepare', requireAuth, prepareLimiter, contributionValidation, validateRequest, asyncHandler(async (req, res) => {
   const { campaign_id, amount, send_asset, sender_public_key, display_name } = req.body;
   if (!sender_public_key) {
-    return res.status(422).json({
-      error: {
-        code: 'VALIDATION_ERROR',
-        message: 'sender_public_key is required for Freighter contributions',
-        fields: { sender_public_key: 'sender_public_key is required for Freighter contributions' },
-      },
+    return sendErrorResponse(res, 422, 'sender_public_key is required for Freighter contributions', {
+      sender_public_key: 'sender_public_key is required for Freighter contributions',
     });
   }
   if (!validateFreighterPublicKey(sender_public_key)) {
-    return res.status(422).json({
-      error: {
-        code: 'VALIDATION_ERROR',
-        message: 'sender_public_key must be a valid Stellar public key',
-        fields: { sender_public_key: 'Invalid Stellar public key' },
-      },
+    return sendErrorResponse(res, 422, 'sender_public_key must be a valid Stellar public key', {
+      sender_public_key: 'Invalid Stellar public key',
     });
   }
 
   const campaign = await loadActiveCampaign(campaign_id);
-  if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
+  if (!campaign) return sendErrorResponse(res, 404, 'Campaign not found');
 
   if (campaign.min_contribution && parseAmountToStroops(amount) < parseAmountToStroops(campaign.min_contribution)) {
-    return res.status(400).json({ error: `Contribution amount is below the minimum limit of ${campaign.min_contribution} ${campaign.asset_type}` });
+    return sendErrorResponse(res, 400, `Contribution amount is below the minimum limit of ${campaign.min_contribution} ${campaign.asset_type}`);
   }
 
   if (campaign.max_contribution) {
@@ -413,7 +406,7 @@ router.post('/prepare', requireAuth, prepareLimiter, contributionValidation, val
     );
     const totalExisting = parseAmountToStroops(sumRows[0].total);
     if (totalExisting + parseAmountToStroops(amount) > parseAmountToStroops(campaign.max_contribution)) {
-      return res.status(400).json({ error: `Contribution violates the maximum limit of ${campaign.max_contribution} ${campaign.asset_type} per backer` });
+      return sendErrorResponse(res, 400, `Contribution violates the maximum limit of ${campaign.max_contribution} ${campaign.asset_type} per backer`);
     }
   }
 
@@ -471,7 +464,7 @@ router.post('/prepare', requireAuth, prepareLimiter, contributionValidation, val
     });
   } catch (err) {
     if (err.statusCode === 422) {
-      return res.status(422).json({ error: err.message });
+      return sendErrorResponse(res, 422, err.message);
     }
 
     if (isCircuitOpenError(err)) {
@@ -479,31 +472,29 @@ router.post('/prepare', requireAuth, prepareLimiter, contributionValidation, val
         campaign_id,
         error: err.message,
       });
-      return res.status(503).json({ error: STELLAR_UNAVAILABLE_MESSAGE });
+      return sendErrorResponse(res, 503, STELLAR_UNAVAILABLE_MESSAGE);
     }
 
     logger.error('Freighter contribution preparation failed', { campaign_id, error: err.message });
-    return res.status(503).json({
-      error: 'Could not prepare the Stellar transaction right now. Please try again.',
-    });
+    return sendErrorResponse(res, 503, 'Could not prepare the Stellar transaction right now. Please try again.');
   }
 }));
 
 router.post('/submit-signed', requireAuth, submitSignedLimiter, idempotency, asyncHandler(async (req, res) => {
   const { signed_xdr, prepare_token } = req.body;
   if (!signed_xdr || !prepare_token) {
-    return res.status(400).json({ error: 'signed_xdr and prepare_token are required' });
+    return sendErrorResponse(res, 400, 'signed_xdr and prepare_token are required');
   }
 
   let prepared;
   try {
     prepared = verifyPreparedContributionToken(prepare_token);
   } catch (err) {
-    return res.status(400).json({ error: err.message || 'Invalid prepare_token' });
+    return sendErrorResponse(res, 400, err.message || 'Invalid prepare_token');
   }
 
   if (prepared.user_id !== req.user.userId) {
-    return res.status(403).json({ error: 'Prepared contribution token does not belong to this user' });
+    return sendErrorResponse(res, 403, 'Prepared contribution token does not belong to this user');
   }
 
   try {
@@ -513,7 +504,7 @@ router.post('/submit-signed', requireAuth, submitSignedLimiter, idempotency, asy
       senderPublicKey: prepared.sender_public_key,
     });
   } catch (err) {
-    return res.status(422).json({ error: err.message });
+    return sendErrorResponse(res, 422, err.message);
   }
 
   // Re-load the campaign and re-validate the prepared claims against its
@@ -521,37 +512,25 @@ router.post('/submit-signed', requireAuth, submitSignedLimiter, idempotency, asy
   // limit changes) cannot be bypassed by a previously issued prepare token.
   const campaign = await loadActiveCampaign(prepared.campaign_id);
   if (!campaign) {
-    return res.status(409).json({
-      error: 'Campaign is no longer available for contributions',
-      code: 'CAMPAIGN_UNAVAILABLE',
-    });
+    return sendErrorResponse(res, 409, 'Campaign is no longer available for contributions', undefined, 'CAMPAIGN_UNAVAILABLE');
   }
 
   if (
     prepared.campaign_asset_type !== undefined &&
     campaign.asset_type !== prepared.campaign_asset_type
   ) {
-    return res.status(409).json({
-      error: 'Campaign asset type changed since the contribution was prepared',
-      code: 'CAMPAIGN_ASSET_CHANGED',
-    });
+    return sendErrorResponse(res, 409, 'Campaign asset type changed since the contribution was prepared', undefined, 'CAMPAIGN_ASSET_CHANGED');
   }
 
   if (
     prepared.campaign_wallet_public_key !== undefined &&
     campaign.wallet_public_key !== prepared.campaign_wallet_public_key
   ) {
-    return res.status(409).json({
-      error: 'Campaign destination wallet changed since the contribution was prepared',
-      code: 'CAMPAIGN_DESTINATION_CHANGED',
-    });
+    return sendErrorResponse(res, 409, 'Campaign destination wallet changed since the contribution was prepared', undefined, 'CAMPAIGN_DESTINATION_CHANGED');
   }
 
   if (prepared.amount === undefined) {
-    return res.status(422).json({
-      error: 'Prepared contribution token is missing the contribution amount',
-      code: 'PREPARE_TOKEN_INVALID',
-    });
+    return sendErrorResponse(res, 422, 'Prepared contribution token is missing the contribution amount', undefined, 'PREPARE_TOKEN_INVALID');
   }
 
   const preparedAmountStroops = parseAmountToStroops(prepared.amount);
@@ -560,20 +539,14 @@ router.post('/submit-signed', requireAuth, submitSignedLimiter, idempotency, asy
     campaign.min_contribution &&
     preparedAmountStroops < parseAmountToStroops(campaign.min_contribution)
   ) {
-    return res.status(422).json({
-      error: `Contribution amount is below the current minimum limit of ${campaign.min_contribution} ${campaign.asset_type}`,
-      code: 'AMOUNT_BELOW_MINIMUM',
-    });
+    return sendErrorResponse(res, 422, `Contribution amount is below the current minimum limit of ${campaign.min_contribution} ${campaign.asset_type}`, undefined, 'AMOUNT_BELOW_MINIMUM');
   }
 
   if (
     campaign.max_contribution &&
     preparedAmountStroops > parseAmountToStroops(campaign.max_contribution)
   ) {
-    return res.status(422).json({
-      error: `Contribution amount exceeds the current maximum limit of ${campaign.max_contribution} ${campaign.asset_type}`,
-      code: 'AMOUNT_ABOVE_MAXIMUM',
-    });
+    return sendErrorResponse(res, 422, `Contribution amount exceeds the current maximum limit of ${campaign.max_contribution} ${campaign.asset_type}`, undefined, 'AMOUNT_ABOVE_MAXIMUM');
   }
 
   let txHash;
@@ -585,7 +558,7 @@ router.post('/submit-signed', requireAuth, submitSignedLimiter, idempotency, asy
         campaign_id: prepared.campaign_id,
         error: err.message,
       });
-      return res.status(503).json({ error: STELLAR_UNAVAILABLE_MESSAGE });
+      return sendErrorResponse(res, 503, STELLAR_UNAVAILABLE_MESSAGE);
     }
     logger.error('Freighter contribution submission failed', {
       campaign_id: prepared.campaign_id,
@@ -598,10 +571,7 @@ router.post('/submit-signed', requireAuth, submitSignedLimiter, idempotency, asy
       campaign_id: prepared.campaign_id,
       error: err.message,
     });
-    return res.status(502).json({
-      error: 'Stellar network rejected the transaction',
-      detail: err.message || String(err),
-    });
+    return sendErrorResponse(res, 502, 'Stellar network rejected the transaction', undefined, undefined, { detail: err.message || String(err) });
   }
 
   const stellarTransactionId = await insertContributionSubmitted(null, {
@@ -671,7 +641,7 @@ router.post(
     const { campaign_id, amount, send_asset, display_name } = req.body;
 
     const campaign = await loadActiveCampaign(campaign_id);
-    if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
+    if (!campaign) return sendErrorResponse(res, 404, 'Campaign not found');
 
     // Load contributor's custodial secret
     const { rows: users } = await db.query(
@@ -684,15 +654,11 @@ if (
     campaign.min_contribution &&
     parseAmountToStroops(amount) < parseAmountToStroops(campaign.min_contribution)
   ) {
-    return res.status(400).json({
-      error: `Minimum contribution is ${campaign.min_contribution} ${campaign.asset_type}`,
-    });
+    return sendErrorResponse(res, 400, `Minimum contribution is ${campaign.min_contribution} ${campaign.asset_type}`);
   }
 
   if (campaign.max_contribution && parseAmountToStroops(amount) > parseAmountToStroops(campaign.max_contribution)) {
-    return res.status(400).json({
-      error: `Maximum contribution is ${campaign.max_contribution} ${campaign.asset_type}`,
-    });
+    return sendErrorResponse(res, 400, `Maximum contribution is ${campaign.max_contribution} ${campaign.asset_type}`);
   }
 
   if (campaign.max_per_user) {
@@ -702,9 +668,7 @@ if (
     );
     const alreadyContributed = parseAmountToStroops(userCapRows[0].total);
     if (alreadyContributed + parseAmountToStroops(amount) > parseAmountToStroops(campaign.max_per_user)) {
-      return res.status(400).json({
-        error: `You have already contributed ${formatStroops(alreadyContributed)} ${campaign.asset_type}. The per-contributor limit is ${campaign.max_per_user}.`,
-      });
+      return sendErrorResponse(res, 400, `You have already contributed ${formatStroops(alreadyContributed)} ${campaign.asset_type}. The per-contributor limit is ${campaign.max_per_user}.`);
     }
   }
 
@@ -734,10 +698,10 @@ if (
           campaign_id,
           error: err.message,
         });
-        return res.status(503).json({ error: STELLAR_UNAVAILABLE_MESSAGE });
+        return sendErrorResponse(res, 503, STELLAR_UNAVAILABLE_MESSAGE);
       }
       if (err.statusCode === 422) {
-        return res.status(422).json({ error: err.message });
+        return sendErrorResponse(res, 422, err.message);
       }
       if (err.statusCode === 502) {
         logger.error("Stellar transaction submission failed", {
@@ -748,20 +712,14 @@ if (
           campaign_id,
           error: err.message,
         });
-        return res.status(502).json({
-          error: "Stellar network rejected the transaction",
-          detail: err.message || String(err),
-        });
+        return sendErrorResponse(res, 502, "Stellar network rejected the transaction", undefined, undefined, { detail: err.message || String(err) });
       }
 
       logger.error("Custodial contribution signing failed", {
         campaign_id,
         error: err.message,
       });
-      return res.status(503).json({
-        error:
-          "Wallet setup is still completing; please retry in a few seconds.",
-      });
+      return sendErrorResponse(res, 503, "Wallet setup is still completing; please retry in a few seconds.");
     }
 
     if (parseAmountToStroops(campaign.raised_amount) + parseAmountToStroops(amount) >= parseAmountToStroops(campaign.target_amount)) {

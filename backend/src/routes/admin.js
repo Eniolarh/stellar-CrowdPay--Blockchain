@@ -6,6 +6,7 @@ const { requireAuth, requireAdmin, requireSuperAdmin } = require('../middleware/
 const { reconcileSingleCampaign } = require('../services/reconciliation');
 const cache = require('../utils/cache');
 const { getRequestContext } = require('../middleware/requestContext');
+const { sendErrorResponse } = require('../middleware/errorHandler');
 
 // Per-route JSON body limit for admin payloads (tighter than the global limit).
 const adminJsonParser = express.json({ limit: '10kb' });
@@ -89,7 +90,7 @@ router.get('/stats', async (req, res) => {
     });
   } catch (err) {
     logger.error('Error fetching admin stats', { error: err.message });
-    res.status(500).json({ error: 'Failed to fetch statistics' });
+    sendErrorResponse(res, 500, 'Failed to fetch statistics');
   }
 });
 
@@ -138,7 +139,7 @@ router.get('/campaigns', async (req, res) => {
     res.json(rows);
   } catch (err) {
     logger.error('Error fetching campaigns for admin', { error: err.message });
-    res.status(500).json({ error: 'Failed to fetch campaigns' });
+    sendErrorResponse(res, 500, 'Failed to fetch campaigns');
   }
 });
 
@@ -161,7 +162,7 @@ router.get('/campaigns/deleted', async (req, res) => {
     res.json(rows);
   } catch (err) {
     logger.error('Error fetching deleted campaigns for admin', { error: err.message });
-    res.status(500).json({ error: 'Failed to fetch deleted campaigns' });
+    sendErrorResponse(res, 500, 'Failed to fetch deleted campaigns');
   }
 });
 
@@ -180,7 +181,7 @@ router.patch('/campaigns/:id/suspend', adminJsonParser, async (req, res) => {
     );
 
     if (!campaignRows.length) {
-      return res.status(404).json({ error: 'Campaign not found' });
+      return sendErrorResponse(res, 404, 'Campaign not found');
     }
 
     const campaign = campaignRows[0];
@@ -201,7 +202,7 @@ router.patch('/campaigns/:id/suspend', adminJsonParser, async (req, res) => {
     res.json({ message: 'Campaign suspended', campaign: updated[0] });
   } catch (err) {
     logger.error('Error suspending campaign', { error: err.message, campaignId: req.params.id });
-    res.status(500).json({ error: 'Failed to suspend campaign' });
+    sendErrorResponse(res, 500, 'Failed to suspend campaign');
   }
 });
 
@@ -219,7 +220,7 @@ router.patch('/campaigns/:id/restore', adminJsonParser, async (req, res) => {
     );
 
     if (!campaignRows.length) {
-      return res.status(404).json({ error: 'Campaign not found' });
+      return sendErrorResponse(res, 404, 'Campaign not found');
     }
 
     const campaign = campaignRows[0];
@@ -243,7 +244,7 @@ router.patch('/campaigns/:id/restore', adminJsonParser, async (req, res) => {
 
     // Handle suspended campaign restoration
     if (campaign.status !== 'suspended') {
-      return res.status(400).json({ error: 'Only suspended or deleted campaigns can be restored' });
+      return sendErrorResponse(res, 400, 'Only suspended or deleted campaigns can be restored');
     }
 
     const { rows: updated } = await db.query(
@@ -261,7 +262,7 @@ router.patch('/campaigns/:id/restore', adminJsonParser, async (req, res) => {
     res.json({ message: 'Campaign restored', campaign: updated[0] });
   } catch (err) {
     logger.error('Error restoring campaign', { error: err.message, campaignId: req.params.id });
-    res.status(500).json({ error: 'Failed to restore campaign' });
+    sendErrorResponse(res, 500, 'Failed to restore campaign');
   }
 });
 
@@ -280,7 +281,7 @@ router.delete('/campaigns/:id', adminJsonParser, async (req, res) => {
     );
 
     if (!campaignRows.length) {
-      return res.status(404).json({ error: 'Campaign not found' });
+      return sendErrorResponse(res, 404, 'Campaign not found');
     }
 
     const { rows: updated } = await db.query(
@@ -298,7 +299,7 @@ router.delete('/campaigns/:id', adminJsonParser, async (req, res) => {
     res.json({ message: 'Campaign deleted', campaign: updated[0] });
   } catch (err) {
     logger.error('Error deleting campaign', { error: err.message, campaignId: req.params.id });
-    res.status(500).json({ error: 'Failed to delete campaign' });
+    sendErrorResponse(res, 500, 'Failed to delete campaign');
   }
 });
 
@@ -317,7 +318,7 @@ router.patch('/campaigns/:id/feature', adminJsonParser, async (req, res) => {
     );
 
     if (!campaignRows.length) {
-      return res.status(404).json({ error: 'Campaign not found' });
+      return sendErrorResponse(res, 404, 'Campaign not found');
     }
 
     const { rows: updated } = await db.query(
@@ -336,7 +337,7 @@ router.patch('/campaigns/:id/feature', adminJsonParser, async (req, res) => {
     res.json({ message: 'Campaign featured', campaign: updated[0] });
   } catch (err) {
     logger.error('Error featuring campaign', { error: err.message, campaignId: req.params.id });
-    res.status(500).json({ error: 'Failed to feature campaign' });
+    sendErrorResponse(res, 500, 'Failed to feature campaign');
   }
 });
 
@@ -354,7 +355,7 @@ router.patch('/campaigns/:id/unfeature', adminJsonParser, async (req, res) => {
     );
 
     if (!campaignRows.length) {
-      return res.status(404).json({ error: 'Campaign not found' });
+      return sendErrorResponse(res, 404, 'Campaign not found');
     }
 
     const { rows: updated } = await db.query(
@@ -373,7 +374,7 @@ router.patch('/campaigns/:id/unfeature', adminJsonParser, async (req, res) => {
     res.json({ message: 'Campaign unfeatured', campaign: updated[0] });
   } catch (err) {
     logger.error('Error unfeaturing campaign', { error: err.message, campaignId: req.params.id });
-    res.status(500).json({ error: 'Failed to unfeature campaign' });
+    sendErrorResponse(res, 500, 'Failed to unfeature campaign');
   }
 });
 
@@ -403,7 +404,7 @@ router.get('/users', async (req, res) => {
     res.json(rows);
   } catch (err) {
     logger.error('Error fetching users for admin', { error: err.message });
-    res.status(500).json({ error: 'Failed to fetch users' });
+    sendErrorResponse(res, 500, 'Failed to fetch users');
   }
 });
 
@@ -417,7 +418,7 @@ router.patch('/users/:id/ban', adminJsonParser, async (req, res) => {
     const { reason } = req.body;
 
     if (!reason || reason.trim().length === 0) {
-      return res.status(400).json({ error: 'Reason is required for banning a user' });
+      return sendErrorResponse(res, 400, 'Reason is required for banning a user');
     }
 
     const { rows: userRows } = await db.query(
@@ -426,13 +427,13 @@ router.patch('/users/:id/ban', adminJsonParser, async (req, res) => {
     );
 
     if (!userRows.length) {
-      return res.status(404).json({ error: 'User not found' });
+      return sendErrorResponse(res, 404, 'User not found');
     }
 
     const user = userRows[0];
 
     if (user.is_banned) {
-      return res.status(400).json({ error: 'User is already banned' });
+      return sendErrorResponse(res, 400, 'User is already banned');
     }
 
     const { rows: updated } = await db.query(
@@ -448,7 +449,7 @@ router.patch('/users/:id/ban', adminJsonParser, async (req, res) => {
     res.json({ message: 'User banned', user: updated[0] });
   } catch (err) {
     logger.error('Error banning user', { error: err.message, userId: req.params.id });
-    res.status(500).json({ error: 'Failed to ban user' });
+    sendErrorResponse(res, 500, 'Failed to ban user');
   }
 });
 
@@ -466,13 +467,13 @@ router.patch('/users/:id/unban', adminJsonParser, async (req, res) => {
     );
 
     if (!userRows.length) {
-      return res.status(404).json({ error: 'User not found' });
+      return sendErrorResponse(res, 404, 'User not found');
     }
 
     const user = userRows[0];
 
     if (!user.is_banned) {
-      return res.status(400).json({ error: 'User is not banned' });
+      return sendErrorResponse(res, 400, 'User is not banned');
     }
 
     const { rows: updated } = await db.query(
@@ -486,7 +487,7 @@ router.patch('/users/:id/unban', adminJsonParser, async (req, res) => {
     res.json({ message: 'User unbanned', user: updated[0] });
   } catch (err) {
     logger.error('Error unbanning user', { error: err.message, userId: req.params.id });
-    res.status(500).json({ error: 'Failed to unban user' });
+    sendErrorResponse(res, 500, 'Failed to unban user');
   }
 });
 
@@ -501,7 +502,7 @@ router.get('/audit-log', async (req, res) => {
     const offsetNum = beforeId ? 0 : parseInt(offset) || 0;
 
     if (beforeId && !/^[0-9a-f-]{36}$/i.test(beforeId)) {
-      return res.status(400).json({ error: 'before_id must be a UUID' });
+      return sendErrorResponse(res, 400, 'before_id must be a UUID');
     }
 
     // Keyset pagination: pass the last row's id as before_id to fetch the next page.
@@ -532,7 +533,7 @@ router.get('/audit-log', async (req, res) => {
     });
   } catch (err) {
     logger.error('Error fetching audit log', { error: err.message });
-    res.status(500).json({ error: 'Failed to fetch audit log' });
+    sendErrorResponse(res, 500, 'Failed to fetch audit log');
   }
 });
 
@@ -550,13 +551,13 @@ router.patch('/users/:id/promote', requireSuperAdmin, adminJsonParser, async (re
     );
 
     if (!userRows.length) {
-      return res.status(404).json({ error: 'User not found' });
+      return sendErrorResponse(res, 404, 'User not found');
     }
 
     const user = userRows[0];
 
     if (user.is_admin) {
-      return res.status(400).json({ error: 'User is already an admin' });
+      return sendErrorResponse(res, 400, 'User is already an admin');
     }
 
     const { rows: updated } = await db.query(
@@ -570,7 +571,7 @@ router.patch('/users/:id/promote', requireSuperAdmin, adminJsonParser, async (re
     res.json({ message: 'User promoted to admin', user: updated[0] });
   } catch (err) {
     logger.error('Error promoting user', { error: err.message, userId: req.params.id });
-    res.status(500).json({ error: 'Failed to promote user' });
+    sendErrorResponse(res, 500, 'Failed to promote user');
   }
 });
 
@@ -585,7 +586,7 @@ router.patch('/users/:id/demote', requireSuperAdmin, adminJsonParser, async (req
 
     // Block self-demotion
     if (String(id) === String(req.user.userId)) {
-      return res.status(403).json({ error: 'You cannot demote yourself' });
+      return sendErrorResponse(res, 403, 'You cannot demote yourself');
     }
 
     const { rows: userRows } = await db.query(
@@ -594,13 +595,13 @@ router.patch('/users/:id/demote', requireSuperAdmin, adminJsonParser, async (req
     );
 
     if (!userRows.length) {
-      return res.status(404).json({ error: 'User not found' });
+      return sendErrorResponse(res, 404, 'User not found');
     }
 
     const user = userRows[0];
 
     if (!user.is_admin) {
-      return res.status(400).json({ error: 'User is not an admin' });
+      return sendErrorResponse(res, 400, 'User is not an admin');
     }
 
     // Quorum guard: ensure at least one admin (besides the target) will remain
@@ -610,7 +611,7 @@ router.patch('/users/:id/demote', requireSuperAdmin, adminJsonParser, async (req
     );
     const remainingAdmins = parseInt(adminCountRows[0].count, 10);
     if (remainingAdmins < 1) {
-      return res.status(409).json({ error: 'Cannot demote the last admin — the platform would be locked out' });
+      return sendErrorResponse(res, 409, 'Cannot demote the last admin — the platform would be locked out');
     }
 
     const { rows: updated } = await db.query(
@@ -624,7 +625,7 @@ router.patch('/users/:id/demote', requireSuperAdmin, adminJsonParser, async (req
     res.json({ message: 'Admin demoted to user', user: updated[0] });
   } catch (err) {
     logger.error('Error demoting admin', { error: err.message, userId: req.params.id });
-    res.status(500).json({ error: 'Failed to demote user' });
+    sendErrorResponse(res, 500, 'Failed to demote user');
   }
 });
 
@@ -633,7 +634,7 @@ router.get('/milestones', async (req, res) => {
   const status = req.query.status ? String(req.query.status) : null;
   const allowedStatuses = ['pending', 'approved', 'released'];
   if (status && !allowedStatuses.includes(status)) {
-    return res.status(400).json({ error: `status must be one of: ${allowedStatuses.join(', ')}` });
+    return sendErrorResponse(res, 400, `status must be one of: ${allowedStatuses.join(', ')}`);
   }
 
   const params = [];
@@ -666,10 +667,10 @@ router.post('/campaigns/:id/reconcile', adminJsonParser, async (req, res) => {
     res.json({ message: 'Reconciliation completed', result });
   } catch (err) {
     if (err.message === 'Campaign not found') {
-      return res.status(404).json({ error: 'Campaign not found' });
+      return sendErrorResponse(res, 404, 'Campaign not found');
     }
     logger.error('Error during manual reconciliation', { error: err.message, campaignId: req.params.id });
-    res.status(500).json({ error: 'Failed to reconcile campaign' });
+    sendErrorResponse(res, 500, 'Failed to reconcile campaign');
   }
 });
 
@@ -737,7 +738,7 @@ router.get('/refund-queue', async (req, res) => {
     });
   } catch (err) {
     logger.error('Error fetching refund queue', { error: err.message });
-    res.status(500).json({ error: 'Failed to fetch refund queue' });
+    sendErrorResponse(res, 500, 'Failed to fetch refund queue');
   }
 });
 

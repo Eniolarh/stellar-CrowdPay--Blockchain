@@ -3,6 +3,7 @@ const db = require('../config/database');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { sendEmailSafe } = require('../services/emailService');
 const logger = require('../config/logger');
+const { sendErrorResponse } = require('../middleware/errorHandler');
 
 async function logDisputeEvent(client, { disputeId, actorId, action, note }) {
   await client.query(
@@ -73,17 +74,17 @@ router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
 
   const VALID_REASONS = ['non_delivery', 'misrepresentation', 'abandoned', 'other'];
   if (!VALID_REASONS.includes(reason)) {
-    return res.status(422).json({ error: `reason must be one of: ${VALID_REASONS.join(', ')}` });
+    return sendErrorResponse(res, 422, `reason must be one of: ${VALID_REASONS.join(', ')}`);
   }
   if (!description || !description.trim()) {
-    return res.status(422).json({ error: 'description is required' });
+    return sendErrorResponse(res, 422, 'description is required');
   }
 
   const { rows: campaigns } = await db.query(
     'SELECT id, creator_id, title FROM campaigns WHERE id = $1',
     [req.params.id]
   );
-  if (!campaigns.length) return res.status(404).json({ error: 'Campaign not found' });
+  if (!campaigns.length) return sendErrorResponse(res, 404, 'Campaign not found');
   const campaign = campaigns[0];
 
   // Must have contributed
@@ -95,7 +96,7 @@ router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
     [campaign.id, req.user.userId]
   );
   if (!contributions.length) {
-    return res.status(403).json({ error: 'Only contributors who have backed this campaign can raise a dispute' });
+    return sendErrorResponse(res, 403, 'Only contributors who have backed this campaign can raise a dispute');
   }
 
   const client = await db.connect();
@@ -145,10 +146,10 @@ router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
   } catch (err) {
     await client.query('ROLLBACK');
     if (err.code === '23505') {
-      return res.status(409).json({ error: 'You already have an open dispute for this campaign' });
+      return sendErrorResponse(res, 409, 'You already have an open dispute for this campaign');
     }
     logger.error('Dispute creation failed', { error: err.message });
-    res.status(500).json({ error: 'Could not raise dispute' });
+    sendErrorResponse(res, 500, 'Could not raise dispute');
   } finally {
     client.release();
   }
@@ -260,14 +261,14 @@ router.patch('/disputes/:id', requireAuth, requireRole('admin'), async (req, res
 
   const VALID_STATUSES = ['open', 'under_review', 'resolved_creator', 'resolved_contributor', 'closed'];
   if (!VALID_STATUSES.includes(status)) {
-    return res.status(422).json({ error: `status must be one of: ${VALID_STATUSES.join(', ')}` });
+    return sendErrorResponse(res, 422, `status must be one of: ${VALID_STATUSES.join(', ')}`);
   }
 
   const { rows: disputes } = await db.query(
     'SELECT * FROM disputes WHERE id = $1',
     [req.params.id]
   );
-  if (!disputes.length) return res.status(404).json({ error: 'Dispute not found' });
+  if (!disputes.length) return sendErrorResponse(res, 404, 'Dispute not found');
   const dispute = disputes[0];
 
   const client = await db.connect();
@@ -372,7 +373,7 @@ router.patch('/disputes/:id', requireAuth, requireRole('admin'), async (req, res
   } catch (err) {
     await client.query('ROLLBACK');
     logger.error('Dispute update failed', { dispute_id: dispute.id, error: err.message });
-    res.status(500).json({ error: 'Could not update dispute' });
+    sendErrorResponse(res, 500, 'Could not update dispute');
   } finally {
     client.release();
   }

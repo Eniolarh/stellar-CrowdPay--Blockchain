@@ -286,7 +286,7 @@ test('POST /api/campaigns returns 500 and logs orphaned wallet when DB insert fa
     .send({ title: 'Broken campaign', target_amount: '100', asset_type: 'USDC' });
 
   assert.equal(response.status, 500);
-  assert.match(response.body.error, /contact support/i);
+  assert.match(response.body.error.message, /contact support/i);
 });
 
 test('POST /api/campaigns returns 400 with validation errors for invalid payload', async () => {
@@ -509,7 +509,7 @@ test('POST /campaigns/:id/members/accept rejects token with mismatched email (40
     .send({ token: 'validtoken123' });
 
   assert.equal(response.status, 403);
-  assert.match(response.body.error, /different email/i);
+  assert.match(response.body.error.message, /different email/i);
 });
 
 test('POST /campaigns/:id/members/accept succeeds when emails match', async () => {
@@ -577,7 +577,7 @@ test('POST /campaigns/:id/members/accept rejects expired invites (410)', async (
     .send({ token: 'expiredtoken' });
 
   assert.equal(response.status, 410);
-  assert.match(response.body.error, /expired/i);
+  assert.match(response.body.error.message, /expired/i);
 });
 
 test('POST /campaigns/:id/members/accept rejects already-accepted invite (409)', async () => {
@@ -604,7 +604,7 @@ test('POST /campaigns/:id/members/accept rejects already-accepted invite (409)',
     .send({ token: 'usedtoken' });
 
   assert.equal(response.status, 409);
-  assert.match(response.body.error, /already accepted/i);
+  assert.match(response.body.error.message, /already accepted/i);
 });
 
 test('POST /campaigns/:id/members/accept returns 404 for invalid token', async () => {

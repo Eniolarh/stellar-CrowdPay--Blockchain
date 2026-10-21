@@ -485,7 +485,7 @@ test('POST /api/contributions returns 503 when custodial trustline setup fails',
     .send({ campaign_id: '11111111-1111-1111-1111-111111111111', amount: '5.0000000', send_asset: 'XLM' });
 
   assert.equal(response.status, 503);
-  assert.match(response.body.error, /retry/i);
+  assert.match(response.body.error.message, /retry/i);
 });
 
 test('POST /api/contributions returns 502 when Stellar submit fails and skips audit insert', async () => {
@@ -701,7 +701,7 @@ test('POST /api/contributions/submit-signed rejects a signed XDR that does not m
     });
 
   assert.equal(response.status, 422);
-  assert.match(response.body.error, /does not match/i);
+  assert.match(response.body.error.message, /does not match/i);
 });
 
 test('GET /api/contributions/finalization/:txHash returns finalized when indexed', async () => {
@@ -816,7 +816,7 @@ test('POST /api/contributions validates min_contribution limit', async () => {
     .send({ campaign_id: '11111111-1111-1111-1111-111111111111', amount: '10.0000000', send_asset: 'USDC' });
 
   assert.equal(response.status, 400);
-  assert.equal(response.body.error, 'Minimum contribution is 15.0000000 USDC');
+  assert.equal(response.body.error.message, 'Minimum contribution is 15.0000000 USDC');
 });
 
 test('POST /api/contributions validates max_contribution limit', async () => {
@@ -846,7 +846,7 @@ test('POST /api/contributions validates max_contribution limit', async () => {
     .send({ campaign_id: '11111111-1111-1111-1111-111111111111', amount: '60.0000000', send_asset: 'USDC' });
 
   assert.equal(response.status, 400);
-  assert.equal(response.body.error, 'Maximum contribution is 50.0000000 USDC');
+  assert.equal(response.body.error.message, 'Maximum contribution is 50.0000000 USDC');
 });
 
 test('POST /api/contributions validates cumulative max_per_user cap', async () => {
@@ -881,7 +881,7 @@ test('POST /api/contributions validates cumulative max_per_user cap', async () =
     .send({ campaign_id: '11111111-1111-1111-1111-111111111111', amount: '30.0000000', send_asset: 'USDC' });
 
   assert.equal(response.status, 400);
-  assert.equal(response.body.error, 'You have already contributed 80 USDC. The per-contributor limit is 100.0000000.');
+  assert.equal(response.body.error.message, 'You have already contributed 80 USDC. The per-contributor limit is 100.0000000.');
 });
 
 test('POST /api/contributions/prepare and /submit-signed have rate limiting applied', async () => {

@@ -26,8 +26,18 @@ Browse the interactive API docs at `GET /api/docs` (served from the same spec).
   cookie with `credentials: "include"`. Server-to-server clients may instead send
   `Authorization: Bearer <token>`, where the token is either the access token or a `cp_live_…` API key
   from `POST /api/api-keys`.
-- **Errors**: non-2xx responses have the shape `{ "error": "message" }`, and some include a
-  machine-readable `code`.
+- **Errors**: every non-2xx response has the same envelope:
+
+  ```json
+  { "error": { "code": "VALIDATION_ERROR", "message": "Human-readable message", "fields": { "amount": "Invalid amount" } } }
+  ```
+
+  `code` is always present: by default it is derived from the status (`BAD_REQUEST`, `UNAUTHORIZED`,
+  `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `VALIDATION_ERROR` (422), `TOO_MANY_REQUESTS`,
+  `INTERNAL_ERROR`, `BAD_GATEWAY`, `SERVICE_UNAVAILABLE`), and some endpoints use a more specific one
+  (e.g. `KYC_REQUIRED`). `fields` is present for field-level validation errors. A few endpoints add
+  top-level hints next to `error` (e.g. `retryable`, `retry_after_ms`, `retry_after_seconds`).
+  Request-validation failures (`400 VALIDATION_ERROR`) also keep the raw `errors` array.
 - **Idempotency**: `POST /api/campaigns`, `POST /api/contributions/submit-signed`,
   `POST /api/withdrawals/request` and `POST /api/milestones/:id/release` (and its `/approve` alias)
   accept an optional `Idempotency-Key` header (max 255 chars). A repeated key with the same body

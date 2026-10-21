@@ -1,6 +1,7 @@
 const { body, query, validationResult } = require('express-validator');
 const { Keypair } = require('@stellar/stellar-sdk');
 const { getSupportedAssetCodes } = require('../services/stellarService');
+const { sendErrorResponse } = require('./errorHandler');
 
 const SUPPORTED_ASSETS = getSupportedAssetCodes();
 const VALID_CAMPAIGN_STATUSES = [
@@ -308,18 +309,31 @@ const getCampaignsValidation = [
     .withMessage('offset must be a non-negative integer'),
 ];
 
+/** { field: message } for the first error on each field. */
+function fieldErrors(errors) {
+  const fields = {};
+  for (const e of errors) {
+    const name = e.path || e.param;
+    if (name && !(name in fields)) fields[name] = e.msg;
+  }
+  return fields;
+}
+
 function validateRequest(req, res, next) {
   const result = validationResult(req);
   if (result.isEmpty()) return next();
 
-  return res.status(400).json({ errors: result.array() });
+  const errors = result.array();
+  // `errors` (the raw express-validator list) is kept for existing clients.
+  return sendErrorResponse(res, 400, errors[0].msg, fieldErrors(errors), 'VALIDATION_ERROR', { errors });
 }
 
 function validateRequestAsError(req, res, next) {
   const result = validationResult(req);
   if (result.isEmpty()) return next();
 
-  return res.status(400).json({ error: result.array()[0].msg });
+  const errors = result.array();
+  return sendErrorResponse(res, 400, errors[0].msg, fieldErrors(errors), 'VALIDATION_ERROR');
 }
 
 module.exports = {

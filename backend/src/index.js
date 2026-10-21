@@ -110,7 +110,7 @@ const logger = require('./config/logger');
 const { requestIdMiddleware } = require('./middleware/requestId');
 const { requestLogger } = require('./middleware/requestLogger');
 const { originCheck } = require('./middleware/originCheck');
-const { normalizeErrorResponse, errorHandler } = require('./middleware/errorHandler');
+const { normalizeErrorResponse, errorHandler, sendErrorResponse } = require('./middleware/errorHandler');
 const { startLedgerMonitor, getLedgerStreamHealth } = require('./services/ledgerMonitor');
 const { refreshActiveCampaignStatuses } = require('./services/campaignStatusService');
 const { sendAlert } = require('./services/alerting');
@@ -204,7 +204,7 @@ if (isApiDocsEnabled()) {
   app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(openApiSpec));
 } else {
   app.use('/api/docs', (req, res) => {
-    res.status(404).json({ error: 'Not found' });
+    sendErrorResponse(res, 404, 'Not found');
   });
 }
 
@@ -232,7 +232,7 @@ app.get('/health', async (_, res) => {
     await db.query('SELECT 1');
     res.json({ status: 'ok' });
   } catch (err) {
-    res.status(503).json({ status: 'error', error: err.message });
+    sendErrorResponse(res, 503, err.message, undefined, undefined, { status: 'error' });
   }
 });
 app.get('/api/config', (_, res) =>
@@ -269,7 +269,7 @@ const db = require('./config/database');
     res.json(payload);
   } catch (err) {
     logger.error('Failed to fetch public stats', { error: err.message });
-    res.status(500).json({ error: 'Failed to fetch stats' });
+    sendErrorResponse(res, 500, 'Failed to fetch stats');
   }
 });
 
@@ -284,7 +284,7 @@ app.get('/health/ledger', async (_req, res) => {
       severity: 'critical',
       error: err.message,
     });
-    res.status(500).json({ error: err.message || 'ledger health failed' });
+    sendErrorResponse(res, 500, err.message || 'ledger health failed');
   }
 });
 
