@@ -40,10 +40,31 @@ app.use(
 );
 app.use(express.json({ limit: '50kb' }));
 app.use(cookieParser());
-app.use(Sentry.sentryRequestMiddleware ? Sentry.sentryRequestMiddleware() : (req, res, next) => next());
+// Attach Sentry request context (tracing + breadcrumbs) using the expressIntegration
+// registered in Sentry.init above. The legacy Handlers.requestHandler API is not
+// available in @sentry/node v8+; expressIntegration handles it automatically.
 app.use(requestIdMiddleware);
 app.use(requestLogger);
 app.use(normalizeErrorResponse);
+
+// Attach authenticated user ID to Sentry scope so errors can be traced back to
+// a specific user without exposing PII. This runs after every request that carries
+// a Bearer token (best-effort — unauthenticated requests leave user unset).
+app.use((req, _res, next) => {
+  const header = req.headers.authorization;
+  if (header && header.startsWith('Bearer ')) {
+    try {
+      const jwt = require('jsonwebtoken');
+      const payload = jwt.verify(header.slice(7).trim(), process.env.JWT_SECRET);
+      if (payload?.userId) {
+        Sentry.setUser({ id: payload.userId });
+      }
+    } catch {
+      // Ignore invalid/expired tokens — Sentry user stays unset
+    }
+  }
+  next();
+});
 
 const isTest = process.env.NODE_ENV === 'test';
 const globalApiLimiter = rateLimit({

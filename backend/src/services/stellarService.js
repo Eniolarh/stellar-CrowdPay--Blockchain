@@ -637,8 +637,20 @@ function isXdrExpired(xdr) {
 
 async function submitPreparedTransaction(xdr) {
   const tx = TransactionBuilder.fromXDR(xdr, networkPassphrase);
-  const result = await server.submitTransaction(tx);
-  return result.hash;
+  try {
+    const result = await server.submitTransaction(tx);
+    return result.hash;
+  } catch (err) {
+    // Enrich Sentry error events with Stellar-specific context so engineers can
+    // correlate errors to specific transactions in the Stellar block explorer.
+    Sentry.withScope((scope) => {
+      scope.setTag('stellar.network', process.env.STELLAR_NETWORK);
+      scope.setExtra('tx_hash', tx.hash().toString('hex'));
+      scope.setExtra('result_codes', err?.response?.data?.extras?.result_codes);
+      Sentry.captureException(err);
+    });
+    throw err;
+  }
 }
 
 /**
