@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import VerificationBadge from './VerificationBadge';
 import CampaignStatusBadge from './CampaignStatusBadge';
+import { CATEGORY_KEYS } from '../lib/categories';
 
 function progressColor(pct, status) {
   if (status === 'funded' || pct >= 100) return '#10b981'; // green — goal reached
@@ -24,18 +25,6 @@ function daysSince(date) {
     (Date.now() - new Date(date).getTime()) / (1000 * 60 * 60 * 24),
   );
 }
-
-const CATEGORY_LABELS = {
-  technology: 'Technology',
-  community: 'Community',
-  arts: 'Arts & Culture',
-  education: 'Education',
-  environment: 'Environment',
-  health: 'Health',
-  business: 'Business',
-  open_source: 'Open Source',
-  other: 'Other',
-};
 
 export default function CampaignCard({ campaign, featured }) {
   const { t } = useTranslation();
@@ -87,7 +76,9 @@ export default function CampaignCard({ campaign, featured }) {
             )}
             {campaign.category && (
               <span style={styles.categoryBadge}>
-                {CATEGORY_LABELS[campaign.category] || campaign.category}
+                {CATEGORY_KEYS.includes(campaign.category)
+                  ? t(`categories.${campaign.category}`)
+                  : campaign.category}
               </span>
             )}
           </div>

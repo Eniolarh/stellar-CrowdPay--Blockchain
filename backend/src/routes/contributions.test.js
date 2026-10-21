@@ -208,6 +208,9 @@ function buildApp({ queryImpl, stellarImpl, stellarTxImpl }) {
         req.user = { userId: 'user-1' };
         next();
       },
+      optionalAuth: (req, _res, next) => {
+        next();
+      },
     },
     '../middleware/validation': {
       contributionValidation: [],

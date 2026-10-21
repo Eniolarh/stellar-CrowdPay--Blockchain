@@ -1,9 +1,31 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Symbol, Vec, IntoVal
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Symbol, Vec, IntoVal
 };
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+// ~1 year in ledgers (5s per ledger)
+const INSTANCE_TTL_BUMP: u32 = 6_312_000;
+const INSTANCE_TTL_THRESHOLD: u32 = 100_000;
+
+pub const MAX_MILESTONES: u32 = 32;
+pub const TOTAL_BPS: u32 = 10000;
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum MilestoneError {
+    AlreadyInitialized = 1,
+    NotInitialized = 2,
+    EmptyPlan = 3,
+    InvalidBps = 4,
+    TotalBpsMismatch = 5,
+    MaxMilestonesExceeded = 6,
+    IndexOutOfBounds = 7,
+    InvalidStatus = 8,
+    Unauthorized = 9,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[contracttype]
 pub enum MilestoneStatus {
     Pending = 0,
@@ -12,7 +34,7 @@ pub enum MilestoneStatus {
     Rejected = 3,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct Milestone {
     pub title_hash: BytesN<32>,
@@ -32,12 +54,13 @@ pub enum DataKey {
     Released,
 }
 
-pub const TOTAL_BPS: u32 = 10000;
-
-/// Validates a milestone plan: non-empty, every entry > 0 bps, sum == 10000.
+/// Validates a milestone plan: non-empty, max 32 entries, every entry > 0 bps, sum == 10000.
 pub fn validate_plan(milestones: &Vec<Milestone>) {
     if milestones.is_empty() {
         panic!("At least one milestone required");
+    }
+    if milestones.len() > MAX_MILESTONES {
+        panic!("Milestones plan exceeds maximum allowed limit of 32");
     }
     let mut total_bps: u64 = 0;
     for m in milestones.iter() {
@@ -61,14 +84,8 @@ pub fn release_amount_for(total_raised: i128, release_bps: u32, already_released
     }
 }
 
-// Define the interface for the Escrow contract
 #[contract]
 pub struct MilestonesContract;
-
-// Note: We use invoke_contract for cross-contract calls to avoid strict build dependencies
-// on the escrow wasm during the initial build of this contract.
-// Note: If the wasm is not available yet, we can use a manual client definition.
-// Since we are building this together, I'll use a manual client to avoid build order issues.
 
 #[contractimpl]
 impl MilestonesContract {
@@ -90,6 +107,7 @@ impl MilestonesContract {
         env.storage().instance().set(&DataKey::Escrow, &escrow);
         env.storage().instance().set(&DataKey::Milestones, &milestones);
         env.storage().instance().set(&DataKey::Initialized, &true);
+        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_BUMP);
     }
 
     pub fn submit_milestone(env: Env, index: u32, evidence_hash: BytesN<32>) {
@@ -107,6 +125,7 @@ impl MilestonesContract {
         milestone.evidence_hash = Some(evidence_hash.clone());
         milestones.set(index, milestone);
         env.storage().instance().set(&DataKey::Milestones, &milestones);
+        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_BUMP);
 
         env.events().publish(
             (symbol_short!("submit"), index),
@@ -156,6 +175,8 @@ impl MilestonesContract {
             );
         }
 
+        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_BUMP);
+
         env.events().publish(
             (symbol_short!("approve"), index),
             (),
@@ -176,6 +197,7 @@ impl MilestonesContract {
         milestone.status = MilestoneStatus::Rejected;
         milestones.set(index, milestone);
         env.storage().instance().set(&DataKey::Milestones, &milestones);
+        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_BUMP);
 
         env.events().publish(
             (symbol_short!("reject"), index),
@@ -184,83 +206,16 @@ impl MilestonesContract {
     }
 
     pub fn get_milestone(env: Env, index: u32) -> Milestone {
+        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_BUMP);
         let milestones: Vec<Milestone> = env.storage().instance().get(&DataKey::Milestones).expect("Not initialized");
         milestones.get(index).expect("Invalid index")
     }
 
     pub fn get_all_milestones(env: Env) -> Vec<Milestone> {
+        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_BUMP);
         env.storage().instance().get(&DataKey::Milestones).expect("Not initialized")
     }
 }
 
 #[cfg(test)]
-mod test {
-    use super::*;
-    use soroban_sdk::testutils::Address as _;
-
-    fn plan(env: &Env, bps: &[u32]) -> Vec<Milestone> {
-        let mut v = Vec::new(env);
-        for b in bps {
-            v.push_back(Milestone {
-                title_hash: BytesN::from_array(env, &[0u8; 32]),
-                release_bps: *b,
-                status: MilestoneStatus::Pending,
-                evidence_hash: None,
-            });
-        }
-        v
-    }
-
-    fn try_init(bps: &[u32]) -> bool {
-        let env = Env::default();
-        let id = env.register(MilestonesContract, ());
-        let client = MilestonesContractClient::new(&env, &id);
-        let (a, b, c) = (Address::generate(&env), Address::generate(&env), Address::generate(&env));
-        client.try_initialize(&a, &b, &c, &plan(&env, bps)).is_ok()
-    }
-
-    #[test]
-    fn initialize_accepts_valid_plans() {
-        assert!(try_init(&[10000]));
-        assert!(try_init(&[3333, 3333, 3334]));
-        assert!(try_init(&[2500, 2500, 5000]));
-    }
-
-    #[test]
-    fn initialize_rejects_invalid_plans() {
-        assert!(!try_init(&[]));
-        assert!(!try_init(&[5000, 4000]));
-        assert!(!try_init(&[6000, 6000]));
-        assert!(!try_init(&[0, 10000]));
-        assert!(!try_init(&[0]));
-    }
-
-    #[test]
-    fn remainder_goes_to_final_release() {
-        // 3 milestones of 33.33/33.33/33.34% on 100 raised: 33 + 33 + remainder 34.
-        let total: i128 = 100;
-        let bps = [3333u32, 3333, 3334];
-        let mut released: i128 = 0;
-        for (i, b) in bps.iter().enumerate() {
-            let is_last = i == bps.len() - 1;
-            released += release_amount_for(total, *b, released, is_last);
-        }
-        assert_eq!(released, total);
-    }
-
-    #[test]
-    fn total_withdrawn_equals_total_raised_across_n_milestones() {
-        for n in 1u32..=10 {
-            let base = 10000 / n;
-            let mut bps = [base; 10];
-            bps[(n - 1) as usize] += 10000 - base * n;
-            for total in [1i128, 7, 99, 1_000_003, 123_456_789_012_345] {
-                let mut released: i128 = 0;
-                for i in 0..n {
-                    released += release_amount_for(total, bps[i as usize], released, i == n - 1);
-                }
-                assert_eq!(released, total, "n={} total={}", n, total);
-            }
-        }
-    }
-}
+mod test;

@@ -1,191 +1,118 @@
-import React, {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-} from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import * as Sentry from '@sentry/react';
 
 const DialogContext = createContext(null);
 
+function logInteraction(message, data) {
+  Sentry.addBreadcrumb({ category: 'ui.dialog', level: 'info', message, data });
+}
+
 export function DialogProvider({ children }) {
   const [dialog, setDialog] = useState(null);
-  const resolverRef = useRef(null);
-  const confirmButtonRef = useRef(null);
+  const [value, setValue] = useState('');
+  const restoreRef = useRef(null);
+  const inputRef = useRef(null);
+  const confirmBtnRef = useRef(null);
 
-  const confirm = useCallback((options) => {
-    return new Promise((resolve) => {
-      setDialog({
-        title: options?.title || 'Please confirm',
-        message: options?.message || '',
-        summary: Array.isArray(options?.summary) ? options.summary : [],
-        danger: options?.danger ?? false,
-        confirmLabel: options?.confirmLabel || 'Confirm',
-        cancelLabel: options?.cancelLabel || 'Cancel',
-      });
-      resolverRef.current = resolve;
-    });
+  const open = useCallback((kind, message, options = {}) => {
+    restoreRef.current = document.activeElement;
+    setValue(options.defaultValue || '');
+    return new Promise((resolve) => setDialog({ kind, message, options, resolve }));
   }, []);
 
-  const close = useCallback((confirmed) => {
-    const resolve = resolverRef.current;
-    resolverRef.current = null;
-    setDialog(null);
-    if (resolve) resolve(confirmed);
+  const close = useCallback((result) => {
+    setDialog((d) => {
+      if (d) {
+        logInteraction(d.options.action || d.message, {
+          kind: d.kind,
+          confirmed: result !== null && result !== false,
+        });
+        d.resolve(result);
+      }
+      return null;
+    });
+    restoreRef.current?.focus?.();
   }, []);
 
   useEffect(() => {
-    if (!dialog) return undefined;
-    confirmButtonRef.current?.focus();
-
-    function handleKeyDown(e) {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        close(false);
-      }
-    }
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
+    if (!dialog) return;
+    (dialog.kind === 'prompt' ? inputRef.current : confirmBtnRef.current)?.focus();
+    const onKey = (e) => {
+      if (e.key === 'Escape') close(dialog.kind === 'prompt' ? null : false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
   }, [dialog, close]);
 
+  const api = {
+    confirm: (message, options) => open('confirm', message, options),
+    prompt: (message, options) => open('prompt', message, options),
+    alert: (message, options) => open('alert', message, options),
+  };
+
+  function submit(e) {
+    e.preventDefault();
+    close(dialog.kind === 'prompt' ? value : true);
+  }
+
   return (
-    <DialogContext.Provider value={{ confirm }}>
+    <DialogContext.Provider value={api}>
       {children}
       {dialog && (
         <div
-          data-testid="dialog-overlay"
+          className="modal-backdrop"
           style={{
             position: 'fixed',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            background: 'rgba(0, 0, 0, 0.5)',
+            inset: 0,
+            background: 'rgba(0,0,0,0.5)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            zIndex: 1100,
+            zIndex: 300,
           }}
         >
-          <div
-            role="dialog"
+          <form
+            role={dialog.kind === 'alert' ? 'alertdialog' : 'dialog'}
             aria-modal="true"
-            aria-labelledby="crowdpay-dialog-title"
-            aria-describedby={
-              dialog.message ? 'crowdpay-dialog-description' : undefined
-            }
+            aria-labelledby="app-dialog-message"
+            onSubmit={submit}
             style={{
-              background: 'var(--color-surface)',
+              background: 'var(--color-surface, #fff)',
+              color: 'var(--color-text, inherit)',
               borderRadius: '10px',
-              padding: '1.5rem',
-              maxWidth: '460px',
-              width: '90%',
-              boxShadow: '0 8px 24px rgba(0, 0, 0, 0.2)',
+              padding: '1.25rem',
+              width: 'min(420px, 92vw)',
+              display: 'grid',
+              gap: '0.75rem',
             }}
           >
-            <h2
-              id="crowdpay-dialog-title"
-              style={{
-                margin: '0 0 0.75rem',
-                fontSize: '1.15rem',
-                fontWeight: 800,
-                color: 'var(--color-text-primary)',
-              }}
-            >
-              {dialog.title}
-            </h2>
-
-            {dialog.message && (
-              <p
-                id="crowdpay-dialog-description"
-                style={{
-                  margin: '0 0 1rem',
-                  fontSize: '0.92rem',
-                  color: 'var(--color-text-secondary)',
-                  lineHeight: 1.55,
-                }}
-              >
-                {dialog.message}
-              </p>
+            {/* Rendered as a text node — never as HTML — so server messages are safe. */}
+            <p id="app-dialog-message" style={{ margin: 0 }}>
+              {dialog.message}
+            </p>
+            {dialog.kind === 'prompt' && (
+              <input
+                ref={inputRef}
+                aria-labelledby="app-dialog-message"
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+              />
             )}
-
-            {dialog.summary.length > 0 && (
-              <dl
-                style={{
-                  margin: '0 0 1rem',
-                  display: 'grid',
-                  gap: '0.4rem',
-                  background: 'var(--color-bg)',
-                  border: '1px solid var(--color-border-light)',
-                  borderRadius: '8px',
-                  padding: '0.85rem 1rem',
-                }}
-              >
-                {dialog.summary.map((item, i) => (
-                  <div
-                    key={item.label ?? i}
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      gap: '0.75rem',
-                    }}
-                  >
-                    <dt style={{ color: 'var(--color-text-hint)', fontSize: '0.85rem' }}>
-                      {item.label}
-                    </dt>
-                    <dd
-                      style={{
-                        margin: 0,
-                        minWidth: 0,
-                        textAlign: 'right',
-                        fontSize: '0.85rem',
-                        fontWeight: 600,
-                        color: 'var(--color-text-primary)',
-                        wordBreak: 'break-all',
-                        fontFamily: item.monospace ? 'monospace' : 'inherit',
-                      }}
-                    >
-                      {item.value}
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            )}
-
-            <div
-              style={{
-                display: 'flex',
-                justifyContent: 'flex-end',
-                gap: '0.75rem',
-              }}
-            >
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={() => close(false)}
-              >
-                {dialog.cancelLabel}
-              </button>
-              <button
-                type="button"
-                className="btn-primary"
-                ref={confirmButtonRef}
-                onClick={() => close(true)}
-                style={
-                  dialog.danger
-                    ? {
-                        background: 'var(--color-error-text, #dc2626)',
-                        borderColor: 'var(--color-error-text, #dc2626)',
-                        color: '#fff',
-                      }
-                    : undefined
-                }
-              >
-                {dialog.confirmLabel}
+            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+              {dialog.kind !== 'alert' && (
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => close(dialog.kind === 'prompt' ? null : false)}
+                >
+                  Cancel
+                </button>
+              )}
+              <button type="submit" className="btn-primary" ref={confirmBtnRef}>
+                OK
               </button>
             </div>
-          </div>
+          </form>
         </div>
       )}
     </DialogContext.Provider>

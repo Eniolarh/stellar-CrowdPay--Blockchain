@@ -11,6 +11,7 @@ const {
   STROOPS_PER_UNIT,
   parseAmountToStroops,
   formatStroops,
+  normalizeAmount,
   calculateFeeStroops,
   getPlatformFeeBps,
 } = require('./amounts');
@@ -153,4 +154,69 @@ test('path-payment sendMax split recomposes exactly (campaign + fee === sendMax)
   } finally {
     process.env.PLATFORM_FEE_BPS = previous;
   }
+});
+
+// ---------------------------------------------------------------------------
+// normalizeAmount — issue #63 acceptance criteria
+// Covers the money-path normalization cases that were previously scattered as
+// raw Number()/String()/parseFloat()/toFixed(7) coercions.
+// ---------------------------------------------------------------------------
+
+test('normalizeAmount strips trailing zeros', () => {
+  assert.equal(normalizeAmount('10.0000000'), '10');
+  assert.equal(normalizeAmount('1.5000000'), '1.5');
+  assert.equal(normalizeAmount('0.1000000'), '0.1');
+});
+
+test('normalizeAmount round-trips with parseAmountToStroops + formatStroops', () => {
+  for (const v of ['0', '0.0000001', '0.5', '10', '1234567890.1234567']) {
+    assert.equal(normalizeAmount(v), formatStroops(parseAmountToStroops(v)));
+  }
+});
+
+test('normalizeAmount rejects scientific notation (no silent float drift)', () => {
+  assert.throws(() => normalizeAmount('1e-7'), Error);
+  assert.throws(() => normalizeAmount('1E3'), Error);
+});
+
+test('normalizeAmount handles numeric input (Number type)', () => {
+  // Equivalent to what Number()/String(amount) coercions used to do, but safe.
+  assert.equal(normalizeAmount(10), '10');
+  assert.equal(normalizeAmount(0.5), '0.5');
+});
+
+test('normalizeAmount rejects negative amounts', () => {
+  assert.throws(() => normalizeAmount('-1'), Error);
+  assert.throws(() => normalizeAmount('-0.1'), Error);
+});
+
+test('milestone toReleaseAmount-style stroop math: percentage of amount has no float drift', () => {
+  // Mirrors the new toReleaseAmount implementation in milestones.js.
+  // 25% of 1.0 raised should be exactly 0.25, not a float approximation.
+  const raisedStroops = parseAmountToStroops('1.0');
+  const scaledPct = BigInt(Math.round(25 * 1_000_000));
+  const releasedStroops = (raisedStroops * scaledPct) / 100_000_000n;
+  assert.equal(formatStroops(releasedStroops), '0.25');
+
+  // 33.333% of 9.0 — float would drift, integer math is exact.
+  const raised9 = parseAmountToStroops('9.0');
+  const pct33 = BigInt(Math.round(33.333 * 1_000_000));
+  const released33 = (raised9 * pct33) / 100_000_000n;
+  // 9 * 0.33333 = 2.99997 stroops: 29999700n / 10000000 = 2.99997
+  assert.equal(parseAmountToStroops(formatStroops(released33)), released33);
+  // No scientific notation in the result.
+  assert.ok(!formatStroops(released33).includes('e'));
+});
+
+test('slippage sendMax stroop math: SLIPPAGE_BPS applied without float drift', () => {
+  // Mirrors the updated contributions.js sendMax calculation.
+  const SLIPPAGE_BPS = 50; // 0.5%
+  const sourceStroops = parseAmountToStroops('12.0000003');
+  const maxSendStroops = (sourceStroops * BigInt(10000 + SLIPPAGE_BPS)) / 10000n;
+  const maxSend = formatStroops(maxSendStroops);
+  // result must be >= source, must be a valid Stellar decimal, no scientific notation.
+  assert.ok(!maxSend.includes('e'));
+  assert.ok(parseAmountToStroops(maxSend) >= sourceStroops);
+  // Round-trip: formatStroops(parseAmountToStroops(result)) === result.
+  assert.equal(normalizeAmount(maxSend), maxSend);
 });

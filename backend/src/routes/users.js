@@ -62,6 +62,7 @@ router.post('/me/kyc/start', requireAuth, asyncHandler(async (req, res) => {
   }
 }));
 
+// Deprecated alias of GET /api/campaigns/mine (see API.md).
 router.get('/me/campaigns', requireAuth, asyncHandler(async (req, res) => {
   const campaigns = await listCreatorCampaigns(req.user.userId);
   res.json(campaigns);
@@ -96,6 +97,7 @@ router.get('/me/balance', requireAuth, asyncHandler(async (req, res) => {
   res.json({ balance, public_key: rows[0].wallet_public_key });
 }));
 
+// Deprecated alias of GET /api/contributions/mine (see API.md).
 router.get('/me/contributions', requireAuth, asyncHandler(async (req, res) => {
   const rows = await listUserContributions(req.user.userId);
   if (rows === null) return res.status(404).json({ error: 'User not found' });

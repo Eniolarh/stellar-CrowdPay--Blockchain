@@ -1,6 +1,6 @@
 const db = require('../config/database');
 const logger = require('../config/logger');
-const { sendEmail } = require('./emailService');
+const { sendEmailSafe } = require('./emailService');
 const { createNotification } = require('./notifications');
 const {
   emitWebhookEventForUser,
@@ -118,7 +118,7 @@ async function sendFundedEmails(campaign, contributors) {
   const campaignUrl = `${frontendBaseUrl()}/campaigns/${campaign.id}`;
   const creatorName = campaign.creator_name || 'there';
 
-  await sendEmail({
+  await sendEmailSafe({
     to: campaign.creator_email,
     subject: `Your campaign "${campaign.title}" has reached its goal`,
     text: [
@@ -136,7 +136,7 @@ async function sendFundedEmails(campaign, contributors) {
 
   await Promise.all(
     contributors.map((contributor) =>
-      sendEmail({
+      sendEmailSafe({
         to: contributor.email,
         subject: `Campaign you backed has been fully funded: "${campaign.title}"`,
         text: [
@@ -161,7 +161,7 @@ async function sendFailedEmails(campaign, contributors) {
     ? new Date(campaign.deadline).toDateString()
     : 'the deadline';
 
-  await sendEmail({
+  await sendEmailSafe({
     to: campaign.creator_email,
     subject: `Your campaign "${campaign.title}" ended below its goal`,
     text: [
@@ -179,7 +179,7 @@ async function sendFailedEmails(campaign, contributors) {
 
   await Promise.all(
     contributors.map((contributor) =>
-      sendEmail({
+      sendEmailSafe({
         to: contributor.email,
         subject: `Campaign ended — your refund is available: "${campaign.title}"`,
         text: [
@@ -323,7 +323,7 @@ async function queueFailedCampaignRefunds(campaignId, actorUserId) {
         `INSERT INTO withdrawal_requests
            (campaign_id, requested_by, amount, destination_key, unsigned_xdr,
             creator_signed, platform_signed, contribution_id, is_refund)
-         VALUES ($1, $2, $3, $4, $5, FALSE, FALSE, $6, TRUE)
+         VALUES ($1, $2, $3, $4, $5, TRUE, FALSE, $6, TRUE)
          RETURNING id`,
         [
           campaignId,

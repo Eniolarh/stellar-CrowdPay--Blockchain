@@ -31,6 +31,19 @@ const {
   CUSTODIAL_ACCOUNT_BASE_RESERVE_XLM,
   CUSTODIAL_ACCOUNT_PER_TRUSTLINE_XLM,
 } = require("../config/constants");
+const {
+  horizonBreaker,
+  CircuitOpenError,
+} = require("../utils/circuitBreaker");
+
+/**
+ * Run a Horizon call through the shared circuit breaker.
+ * When the breaker is open this rejects immediately with CircuitOpenError
+ * instead of blocking the request thread until the Horizon timeout.
+ */
+function withHorizonBreaker(fn) {
+  return horizonBreaker.execute(fn);
+}
 
 const PLATFORM_KEYPAIR = Keypair.fromSecret(process.env.PLATFORM_SECRET_KEY);
 
@@ -98,7 +111,7 @@ function suggestedFundingXlmForCustodialAccount(trustlineCount) {
 
 async function accountExistsOnLedger(publicKey) {
   try {
-    await server.loadAccount(publicKey);
+    await withHorizonBreaker(() => server.loadAccount(publicKey));
     return true;
   } catch (err) {
     const status = err?.response?.status;
@@ -116,7 +129,9 @@ async function fundCustodialAccountFromPlatformIfNeeded(publicKey) {
   if (await accountExistsOnLedger(publicKey)) return false;
   const trustlineCount = listCreditAssetCodes().length;
   const startingBalance = suggestedFundingXlmForCustodialAccount(trustlineCount);
-  const platformAccount = await server.loadAccount(PLATFORM_KEYPAIR.publicKey());
+  const platformAccount = await withHorizonBreaker(() =>
+    server.loadAccount(PLATFORM_KEYPAIR.publicKey())
+  );
   const tx = new TransactionBuilder(platformAccount, {
     fee: BASE_FEE,
     networkPassphrase,
@@ -131,7 +146,7 @@ async function fundCustodialAccountFromPlatformIfNeeded(publicKey) {
     .build();
 
   tx.sign(PLATFORM_KEYPAIR);
-  await server.submitTransaction(tx);
+  await withHorizonBreaker(() => server.submitTransaction(tx));
   return true;
 }
 
@@ -141,7 +156,9 @@ async function fundCustodialAccountFromPlatformIfNeeded(publicKey) {
  */
 async function submitMissingTrustlinesForCustodialAccount(signerSecret) {
   const keypair = Keypair.fromSecret(signerSecret);
-  const account = await server.loadAccount(keypair.publicKey());
+  const account = await withHorizonBreaker(() =>
+    server.loadAccount(keypair.publicKey())
+  );
   const builder = new TransactionBuilder(account, {
     fee: BASE_FEE,
     networkPassphrase,
@@ -159,7 +176,7 @@ async function submitMissingTrustlinesForCustodialAccount(signerSecret) {
 
   const tx = builder.setTimeout(TX_TIMEOUT_CONTRIBUTION_S).build();
   tx.sign(keypair);
-  const result = await server.submitTransaction(tx);
+  const result = await withHorizonBreaker(() => server.submitTransaction(tx));
   return result.hash;
 }
 
@@ -186,7 +203,9 @@ function normalizeAsset(record) {
  */
 async function createCampaignWallet(creatorPublicKey) {
   const campaignKeypair = Keypair.random();
-  const platformAccount = await server.loadAccount(PLATFORM_KEYPAIR.publicKey());
+  const platformAccount = await withHorizonBreaker(() =>
+    server.loadAccount(PLATFORM_KEYPAIR.publicKey())
+  );
 
   const creditCodes = listCreditAssetCodes();
   const campaignStartingBalance = suggestedFundingXlmForCustodialAccount(creditCodes.length + 1);
@@ -205,10 +224,12 @@ async function createCampaignWallet(creatorPublicKey) {
     .build();
 
   tx.sign(PLATFORM_KEYPAIR);
-  await server.submitTransaction(tx);
+  await withHorizonBreaker(() => server.submitTransaction(tx));
 
   // Now configure the campaign account: trustline + multisig
-  const campaignAccount = await server.loadAccount(campaignKeypair.publicKey());
+  const campaignAccount = await withHorizonBreaker(() =>
+    server.loadAccount(campaignKeypair.publicKey())
+  );
 
   const setupBuilder = new TransactionBuilder(campaignAccount, {
     fee: BASE_FEE,
@@ -242,7 +263,7 @@ async function createCampaignWallet(creatorPublicKey) {
     .build();
 
   setupTx.sign(campaignKeypair);
-  await server.submitTransaction(setupTx);
+  await withHorizonBreaker(() => server.submitTransaction(setupTx));
 
   return {
     publicKey: campaignKeypair.publicKey(),
@@ -260,7 +281,9 @@ async function buildUnsignedContributionPayment({
   amount,
   memo,
 }) {
-  const senderAccount = await server.loadAccount(senderPublicKey);
+  const senderAccount = await withHorizonBreaker(() =>
+    server.loadAccount(senderPublicKey)
+  );
   const stellarAsset = toStellarAsset(asset);
   const { feeAmount, campaignAmount, feeStroops } = calcFee(amount);
 
@@ -335,7 +358,9 @@ async function buildUnsignedContributionPathPayment({
   destAssetCode,
   memo,
 }) {
-  const senderAccount = await server.loadAccount(senderPublicKey);
+  const senderAccount = await withHorizonBreaker(() =>
+    server.loadAccount(senderPublicKey)
+  );
   const sourceStellarAsset = toStellarAsset(sendAsset);
   const destStellarAsset = toStellarAsset(destAssetCode);
   const { feeAmount, campaignAmount, feeStroops, bps } = calcFee(destAmount);
@@ -431,9 +456,11 @@ async function getPathPaymentQuote({ sendAsset, destAsset, destAmount }) {
   const sourceStellarAsset = toStellarAsset(sendAsset);
   const destinationStellarAsset = toStellarAsset(destAsset);
 
-  const response = await server
-    .strictReceivePaths(sourceStellarAsset, destinationStellarAsset, String(destAmount))
-    .call();
+  const response = await withHorizonBreaker(() =>
+    server
+      .strictReceivePaths(sourceStellarAsset, destinationStellarAsset, String(destAmount))
+      .call()
+  );
 
   return (response.records || []).map((record) => ({
     source_asset: normalizeAsset({
@@ -513,7 +540,9 @@ async function buildWithdrawalTransaction({
   // Validate before hitting the network so callers get a fast, descriptive error.
   validateWithdrawalParams({ amount, asset, destinationPublicKey });
 
-  const campaignAccount = await server.loadAccount(campaignWalletPublicKey);
+  const campaignAccount = await withHorizonBreaker(() =>
+    server.loadAccount(campaignWalletPublicKey)
+  );
 
   // Verify the on-chain balance actually covers the requested amount.
   const balances = {};
@@ -554,7 +583,9 @@ async function buildBatchRefundTransaction({
     throw new Error('refunds must be a non-empty array');
   }
 
-  const campaignAccount = await server.loadAccount(campaignWalletPublicKey);
+  const campaignAccount = await withHorizonBreaker(() =>
+    server.loadAccount(campaignWalletPublicKey)
+  );
 
   // Build a balance map once so we can check each refund against real on-chain holdings.
   const balances = {};
@@ -602,7 +633,7 @@ async function buildBatchRefundTransaction({
 }
 
 async function getAccountMultisigConfig(publicKey) {
-  const account = await server.loadAccount(publicKey);
+  const account = await withHorizonBreaker(() => server.loadAccount(publicKey));
   return {
     thresholds: account.thresholds,
     signers: account.signers || [],
@@ -637,87 +668,8 @@ function isXdrExpired(xdr) {
 
 async function submitPreparedTransaction(xdr) {
   const tx = TransactionBuilder.fromXDR(xdr, networkPassphrase);
-  try {
-    const result = await server.submitTransaction(tx);
-    return result.hash;
-  } catch (err) {
-    // Enrich Sentry error events with Stellar-specific context so engineers can
-    // correlate errors to specific transactions in the Stellar block explorer.
-    Sentry.withScope((scope) => {
-      scope.setTag('stellar.network', process.env.STELLAR_NETWORK);
-      scope.setExtra('tx_hash', tx.hash().toString('hex'));
-      scope.setExtra('result_codes', err?.response?.data?.extras?.result_codes);
-      Sentry.captureException(err);
-    });
-    throw err;
-  }
-}
-
-/**
- * Returns true when the Horizon error indicates the transaction fee was too low
- * for the current network surge pricing.
- */
-function isInsufficientFeeError(err) {
-  const resultCodes = err?.response?.data?.extras?.result_codes;
-  return resultCodes?.transaction === 'tx_insufficient_fee';
-}
-
-/**
- * Submit a prepared (signed) transaction with automatic fee-bump retry.
- *
- * If Horizon rejects the inner transaction with `tx_insufficient_fee` (common
- * during network surge periods), a fee-bump envelope is built around the original
- * transaction and submitted using the platform keypair as the fee-payer.  The
- * inner transaction does NOT need to be re-signed — only the fee-bump envelope
- * requires a signature.
- *
- * On testnet, where fees are negligible, this code path is never triggered.
- * Non-fee errors (bad sequence, account not found, etc.) propagate unchanged.
- *
- * @param {string} innerXdr — Base64 XDR of the signed inner transaction.
- * @returns {Promise<string>} Transaction hash (fee-bump hash when retried).
- */
-async function submitWithFeeBumpFallback(innerXdr) {
-  try {
-    return await submitPreparedTransaction(innerXdr);
-  } catch (err) {
-    if (!isInsufficientFeeError(err)) {
-      // Surface bad-sequence errors with a clear message to help the caller
-      if (isBadSequenceError(err)) {
-        const e = new Error(
-          'Transaction rejected: sequence number mismatch (tx_bad_seq). ' +
-          'The account sequence may have been incremented by a concurrent request. ' +
-          'Please retry the contribution.'
-        );
-        e.isBadSeq = true;
-        throw e;
-      }
-      throw err;
-    }
-
-    // Fee is too low — wrap in a fee-bump transaction signed by the platform.
-    console.warn('[stellar] Fee too low, retrying with fee-bump...');
-    logger.warn('[stellar] tx_insufficient_fee — retrying with fee-bump transaction', {
-      stellar_network: process.env.STELLAR_NETWORK,
-    });
-
-    const innerTx = TransactionBuilder.fromXDR(innerXdr, networkPassphrase);
-    const platformAccount = await server.loadAccount(PLATFORM_KEYPAIR.publicKey());
-
-    // Multiply the current base fee by 10 to ensure we clear the network surge.
-    const bumpFee = String(parseInt(BASE_FEE) * 10);
-
-    const feeBump = TransactionBuilder.buildFeeBumpTransaction(
-      PLATFORM_KEYPAIR,
-      bumpFee,
-      innerTx,
-      networkPassphrase
-    );
-    feeBump.sign(PLATFORM_KEYPAIR);
-
-    const result = await server.submitTransaction(feeBump);
-    return result.hash;
-  }
+  const result = await withHorizonBreaker(() => server.submitTransaction(tx));
+  return result.hash;
 }
 
 async function submitSignedWithdrawal({ xdr }) {
@@ -736,7 +688,9 @@ function getTransactionHash(xdr) {
  */
 async function transactionExistsOnHorizon(hash) {
   try {
-    await server.transactions().transaction(hash).call();
+    await withHorizonBreaker(() =>
+      server.transactions().transaction(hash).call()
+    );
     return true;
   } catch (err) {
     if (err?.response?.status === 404 || err?.name === 'NotFoundError') return false;
@@ -748,7 +702,7 @@ async function transactionExistsOnHorizon(hash) {
  * Get the current balance of a campaign wallet.
  */
 async function getCampaignBalance(publicKey) {
-  const account = await server.loadAccount(publicKey);
+  const account = await withHorizonBreaker(() => server.loadAccount(publicKey));
   const balances = {};
   for (const b of account.balances) {
     const key = b.asset_type === 'native' ? 'XLM' : b.asset_code;
@@ -783,11 +737,13 @@ function recoverWalletFromSecret(secret) {
  * Get transaction history for a campaign wallet.
  */
 async function getWalletTransactionHistory(publicKey, limit = 50) {
-  const txs = await server.transactions()
-    .forAccount(publicKey)
-    .order('desc')
-    .limit(limit)
-    .call();
+  const txs = await withHorizonBreaker(() =>
+    server.transactions()
+      .forAccount(publicKey)
+      .order('desc')
+      .limit(limit)
+      .call()
+  );
   
   return txs.records.map(tx => ({
     hash: tx.hash,
@@ -803,11 +759,13 @@ async function getWalletTransactionHistory(publicKey, limit = 50) {
  * Get payment operations for a campaign wallet (audit trail).
  */
 async function getWalletPayments(publicKey, limit = 100) {
-  const payments = await server.payments()
-    .forAccount(publicKey)
-    .order('desc')
-    .limit(limit)
-    .call();
+  const payments = await withHorizonBreaker(() =>
+    server.payments()
+      .forAccount(publicKey)
+      .order('desc')
+      .limit(limit)
+      .call()
+  );
   
   return payments.records.map(p => ({
     id: p.id,
@@ -876,5 +834,8 @@ module.exports = {
   friendbotFund,
   buildBatchRefundTransaction,
   isBadSequenceError,
+  horizonBreaker,
+  CircuitOpenError,
+  isCircuitOpen: () => horizonBreaker.isOpen(),
   PLATFORM_PUBLIC_KEY: PLATFORM_KEYPAIR.publicKey(),
 };

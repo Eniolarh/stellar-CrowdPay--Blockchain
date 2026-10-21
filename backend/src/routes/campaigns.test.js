@@ -4,6 +4,15 @@ const express = require('express');
 const request = require('supertest');
 const proxyquire = require('proxyquire').noCallThru();
 
+// wallet route/encryption tests decrypt the stored campaign secret, so a stable
+// server-side key must be present (mirrors how provider env vars are seeded).
+process.env.WALLET_ENCRYPTION_KEY =
+  process.env.WALLET_ENCRYPTION_KEY ||
+  '0000000000000000000000000000000000000000000000000000000000000000';
+// campaigns.js pulls in sorobanService -> config/stellar, which builds the USDC asset.
+process.env.USDC_ISSUER =
+  process.env.USDC_ISSUER || 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
+
 function buildApp({
   queryImpl,
   buildWithdrawalTransactionImpl,
@@ -44,6 +53,10 @@ function buildApp({
         next();
       },
       requireRole: () => (req, _res, next) => {
+        next();
+      },
+      optionalAuth: (req, _res, next) => {
+        req.user = authUser || undefined;
         next();
       },
     },
@@ -149,8 +162,8 @@ test('POST /api/campaigns blocks unverified creators when KYC gate is enabled', 
   const app = buildApp({
     authUser: { userId: 'creator-1', role: 'creator' },
     queryImpl: async (text) => {
-      if (text.includes('SELECT email, wallet_public_key, kyc_status FROM users')) {
-        return { rows: [{ wallet_public_key: 'GCREATOR', kyc_status: 'pending' }] };
+      if (text.includes('SELECT email, wallet_public_key, kyc_status, email_verified FROM users')) {
+        return { rows: [{ wallet_public_key: 'GCREATOR', kyc_status: 'pending', email_verified: true }] };
       }
       return { rows: [] };
     },
@@ -178,8 +191,8 @@ test('POST /api/campaigns allows creation when KYC gate is disabled', async (t) 
   const app = buildApp({
     authUser: { userId: 'creator-1', role: 'creator' },
     queryImpl: async (text) => {
-      if (text.includes('SELECT email, wallet_public_key, kyc_status FROM users')) {
-        return { rows: [{ wallet_public_key: 'GCREATOR', kyc_status: 'unverified' }] };
+      if (text.includes('SELECT email, wallet_public_key, kyc_status, email_verified FROM users')) {
+        return { rows: [{ wallet_public_key: 'GCREATOR', kyc_status: 'unverified', email_verified: true }] };
       }
       if (text.includes('INSERT INTO campaigns')) {
         return {
@@ -208,13 +221,54 @@ test('POST /api/campaigns allows creation when KYC gate is disabled', async (t) 
   assert.equal(response.body.id, 'campaign-1');
 });
 
+test('POST /api/campaigns persists an encrypted campaign wallet secret', async (t) => {
+  const previous = process.env.KYC_REQUIRED_FOR_CAMPAIGNS;
+  t.after(() => {
+    if (previous === undefined) delete process.env.KYC_REQUIRED_FOR_CAMPAIGNS;
+    else process.env.KYC_REQUIRED_FOR_CAMPAIGNS = previous;
+  });
+  process.env.KYC_REQUIRED_FOR_CAMPAIGNS = 'false';
+
+  let insertParams;
+  const app = buildApp({
+    authUser: { userId: 'creator-1', role: 'creator' },
+    queryImpl: async (text, params) => {
+      if (text.includes('SELECT email, wallet_public_key, kyc_status, email_verified FROM users')) {
+        return { rows: [{ wallet_public_key: 'GCREATOR', kyc_status: 'unverified', email_verified: true }] };
+      }
+      if (text.includes('INSERT INTO campaigns')) {
+        insertParams = params;
+        return { rows: [{ id: 'campaign-1', creator_id: 'creator-1' }] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/campaigns')
+    .set('Authorization', 'Bearer token')
+    .send({ title: 'Dev campaign', target_amount: '100', asset_type: 'USDC' });
+
+  assert.equal(response.status, 201);
+  assert.ok(insertParams, 'campaign INSERT params were captured');
+  assert.equal(insertParams[0], 'Dev campaign');
+  assert.equal(insertParams[4], 'GPK');
+  assert.equal(typeof insertParams[5], 'string', 'wallet_secret_encrypted must be stored');
+  assert.notEqual(insertParams[5], 'S', 'secret must be stored encrypted, never in plaintext');
+  assert.equal(
+    require('../services/walletService').decryptSecret(insertParams[5]),
+    'S',
+    'stored secret must round-trip back to the wallet master secret'
+  );
+});
+
 test('POST /api/campaigns returns 500 and logs orphaned wallet when DB insert fails', async () => {
   process.env.KYC_REQUIRED_FOR_CAMPAIGNS = 'false';
   const app = buildApp({
     authUser: { userId: 'creator-1', role: 'creator' },
     queryImpl: async (text) => {
-      if (text.includes('SELECT email, wallet_public_key, kyc_status FROM users')) {
-        return { rows: [{ email: 'creator@test.com', wallet_public_key: 'GCREATOR', kyc_status: 'verified' }] };
+      if (text.includes('SELECT email, wallet_public_key, kyc_status, email_verified FROM users')) {
+        return { rows: [{ email: 'creator@test.com', wallet_public_key: 'GCREATOR', kyc_status: 'verified', email_verified: true }] };
       }
       if (text === 'BEGIN' || text === 'ROLLBACK') return { rows: [] };
       if (text.includes('INSERT INTO campaigns')) {
@@ -421,3 +475,148 @@ test('POST /api/campaigns/:id/refresh-status allows authorized creator or admin'
   assert.equal(refreshCalled, true, 'Authorized POST should refresh campaign status');
 });
 
+
+// ---------------------------------------------------------------------------
+// Issue #20: Campaign invite acceptance must be bound to invited email
+// ---------------------------------------------------------------------------
+
+test('POST /campaigns/:id/members/accept rejects token with mismatched email (403)', async () => {
+  const app = buildApp({
+    authUser: { userId: 'other-user', role: 'contributor' },
+    queryImpl: async (text) => {
+      // invite lookup
+      if (text.includes('FROM campaign_members') && text.includes('invite_token')) {
+        return {
+          rows: [{
+            id: 'member-1',
+            accepted_at: null,
+            email: 'alice@example.com',
+            invite_expires_at: new Date(Date.now() + 86400000), // 1 day from now
+          }],
+        };
+      }
+      // user email lookup
+      if (text.includes('SELECT email FROM users')) {
+        return { rows: [{ email: 'bob@example.com' }] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/campaigns/camp-1/members/accept')
+    .set('Authorization', 'Bearer token')
+    .send({ token: 'validtoken123' });
+
+  assert.equal(response.status, 403);
+  assert.match(response.body.error, /different email/i);
+});
+
+test('POST /campaigns/:id/members/accept succeeds when emails match', async () => {
+  const app = buildApp({
+    authUser: { userId: 'alice-id', role: 'contributor' },
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaign_members') && text.includes('invite_token')) {
+        return {
+          rows: [{
+            id: 'member-1',
+            accepted_at: null,
+            email: 'alice@example.com',
+            invite_expires_at: new Date(Date.now() + 86400000),
+          }],
+        };
+      }
+      if (text.includes('SELECT email FROM users')) {
+        return { rows: [{ email: 'alice@example.com' }] };
+      }
+      if (text.includes('UPDATE campaign_members')) {
+        return {
+          rows: [{
+            id: 'member-1',
+            campaign_id: 'camp-1',
+            user_id: 'alice-id',
+            role: 'manager',
+            accepted_at: new Date().toISOString(),
+          }],
+        };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/campaigns/camp-1/members/accept')
+    .set('Authorization', 'Bearer token')
+    .send({ token: 'validtoken123' });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.user_id, 'alice-id');
+});
+
+test('POST /campaigns/:id/members/accept rejects expired invites (410)', async () => {
+  const app = buildApp({
+    authUser: { userId: 'alice-id', role: 'contributor' },
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaign_members') && text.includes('invite_token')) {
+        return {
+          rows: [{
+            id: 'member-1',
+            accepted_at: null,
+            email: 'alice@example.com',
+            invite_expires_at: new Date(Date.now() - 1000), // expired 1 second ago
+          }],
+        };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/campaigns/camp-1/members/accept')
+    .set('Authorization', 'Bearer token')
+    .send({ token: 'expiredtoken' });
+
+  assert.equal(response.status, 410);
+  assert.match(response.body.error, /expired/i);
+});
+
+test('POST /campaigns/:id/members/accept rejects already-accepted invite (409)', async () => {
+  const app = buildApp({
+    authUser: { userId: 'alice-id', role: 'contributor' },
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaign_members') && text.includes('invite_token')) {
+        return {
+          rows: [{
+            id: 'member-1',
+            accepted_at: new Date().toISOString(),
+            email: 'alice@example.com',
+            invite_expires_at: new Date(Date.now() + 86400000),
+          }],
+        };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/campaigns/camp-1/members/accept')
+    .set('Authorization', 'Bearer token')
+    .send({ token: 'usedtoken' });
+
+  assert.equal(response.status, 409);
+  assert.match(response.body.error, /already accepted/i);
+});
+
+test('POST /campaigns/:id/members/accept returns 404 for invalid token', async () => {
+  const app = buildApp({
+    authUser: { userId: 'alice-id', role: 'contributor' },
+    queryImpl: async () => ({ rows: [] }),
+  });
+
+  const response = await request(app)
+    .post('/api/campaigns/camp-1/members/accept')
+    .set('Authorization', 'Bearer token')
+    .send({ token: 'nosuchtoken' });
+
+  assert.equal(response.status, 404);
+});

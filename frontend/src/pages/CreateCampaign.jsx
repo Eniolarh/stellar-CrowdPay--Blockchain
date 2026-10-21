@@ -11,6 +11,7 @@ import {
   isCreatorOnboardingVisible,
   dismissCreatorOnboarding,
 } from '../lib/onboarding';
+import { CATEGORY_KEYS } from '../lib/categories';
 
 const ASSETS = [
   {
@@ -25,17 +26,6 @@ const ASSETS = [
   },
 ];
 
-const CATEGORIES = [
-  { value: 'technology',  label: 'Technology' },
-  { value: 'community',   label: 'Community' },
-  { value: 'arts',        label: 'Arts & Culture' },
-  { value: 'education',   label: 'Education' },
-  { value: 'environment', label: 'Environment' },
-  { value: 'health',      label: 'Health' },
-  { value: 'business',    label: 'Business' },
-  { value: 'open_source', label: 'Open Source' },
-  { value: 'other',       label: 'Other' },
-];
 function emptyMilestone() {
   return { title: '', description: '', release_percentage: '' };
 }
@@ -46,25 +36,23 @@ function milestonePercentTotal(milestones) {
 
 export default function CreateCampaign() {
   const { t } = useTranslation();
-  const { user, ready, updateUser } = useAuth();
+  const { user, ready, updateUser, token } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [step, setStep] = useState(1);
+  const prefill = location.state?.prefill || {};
   const [form, setForm] = useState({
-    title: location.state?.prefill?.title || '',
-    description: location.state?.prefill?.description || '',
-    target_amount: location.state?.prefill?.target_amount || '',
-    asset_type: location.state?.prefill?.asset_type || 'USDC',
+    title: prefill.title || '',
+    description: prefill.description || '',
+    target_amount: prefill.target_amount || '',
+    asset_type: prefill.asset_type || 'USDC',
     deadline: '',
-    min_contribution: location.state?.prefill?.min_contribution || '',
-    max_contribution: location.state?.prefill?.max_contribution || '',
-    show_backer_amounts: location.state?.prefill?.show_backer_amounts ?? true,
     milestones: [],
-    min_contribution: '',
-    max_contribution: '',
-    max_per_user: '',
-    show_backer_amounts: true,
-    category: '',
+    min_contribution: prefill.min_contribution || '',
+    max_contribution: prefill.max_contribution || '',
+    max_per_user: prefill.max_per_user || '',
+    show_backer_amounts: prefill.show_backer_amounts ?? true,
+    category: prefill.category || '',
   });
   const [coverImageFile, setCoverImageFile] = useState(null);
   const [coverImagePreview, setCoverImagePreview] = useState('');
@@ -478,12 +466,15 @@ export default function CreateCampaign() {
 
             <div className="form-stack" style={{ marginTop: '1rem' }}>
               <label className="label-strong" htmlFor="cc-category">
-                Category <span style={{ fontWeight: 500, color: 'var(--color-text-muted)' }}>(optional)</span>
+                {t('categories.label')}{' '}
+                <span style={{ fontWeight: 500, color: 'var(--color-text-muted)' }}>
+                  {t('categories.optional')}
+                </span>
               </label>
               <select id="cc-category" value={form.category} onChange={setField('category')}>
-                <option value="">Select a category</option>
-                {CATEGORIES.map((c) => (
-                  <option key={c.value} value={c.value}>{c.label}</option>
+                <option value="">{t('categories.selectPlaceholder')}</option>
+                {CATEGORY_KEYS.map((key) => (
+                  <option key={key} value={key}>{t(`categories.${key}`)}</option>
                 ))}
               </select>
             </div>

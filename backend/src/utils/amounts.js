@@ -91,11 +91,27 @@ function getPlatformFeeBps() {
   return bps;
 }
 
+/**
+ * Normalise an amount to a canonical Stellar decimal string (at most 7 decimal
+ * places, no trailing zeros, no scientific notation).  Equivalent to
+ * formatStroops(parseAmountToStroops(input)) but reads more clearly at call
+ * sites that don't need the intermediate stroop value.
+ *
+ * Throws for invalid input (same rules as parseAmountToStroops).
+ *
+ * @param {string|number} input  Raw amount from user input or DB
+ * @returns {string}  e.g. "10.5", "0.0000001", "0"
+ */
+function normalizeAmount(input) {
+  return formatStroops(parseAmountToStroops(input));
+}
+
 module.exports = {
   STROOPS_PER_UNIT,
   MAX_DECIMALS,
   parseAmountToStroops,
   formatStroops,
+  normalizeAmount,
   calculateFeeStroops,
   getPlatformFeeBps,
 };

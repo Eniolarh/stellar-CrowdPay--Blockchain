@@ -29,7 +29,7 @@ export default function App() {
     <ThemeProvider>
       <AuthProvider>
         <ToastProvider>
-          <DialogProvider>
+        <DialogProvider>
         {!hideNavbar && <Navbar />}
         <Routes>
           <Route path="/" element={<Home />} />

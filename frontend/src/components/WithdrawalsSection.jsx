@@ -20,7 +20,7 @@ function statusLabel(row, isExpired) {
   return row.status;
 }
 
-export default function WithdrawalsSection({ campaign, milestones = [], user, token, onReleased }) {
+export default function WithdrawalsSection({ campaign, milestones = [], user, onReleased }) {
   const toast = useToast();
   const dialog = useDialog();
   const [forbidden, setForbidden] = useState(false);
@@ -80,12 +80,12 @@ export default function WithdrawalsSection({ campaign, milestones = [], user, to
   }, [canOpenRequest, campaign.id, campaign.asset_type]);
 
   const refresh = useCallback(async () => {
-    if (!token) return;
+    if (!user) return;
     setError('');
     try {
-      const caps = await api.getWithdrawalCapabilities(token);
+      const caps = await api.getWithdrawalCapabilities();
       setCap(caps);
-      const list = await api.listWithdrawals(campaign.id, token);
+      const list = await api.listWithdrawals(campaign.id);
       setRows(list);
       setForbidden(false);
     } catch (e) {
@@ -98,16 +98,16 @@ export default function WithdrawalsSection({ campaign, milestones = [], user, to
     } finally {
       setLoading(false);
     }
-  }, [campaign.id, token]);
+  }, [campaign.id, user]);
 
   useEffect(() => {
-    if (!token) {
+    if (!user) {
       setLoading(false);
       return;
     }
     setLoading(true);
     refresh();
-  }, [token, refresh]);
+  }, [user, refresh]);
 
   async function loadEvents(id) {
     if (openAudit === id) {
@@ -119,7 +119,7 @@ export default function WithdrawalsSection({ campaign, milestones = [], user, to
       return;
     }
     try {
-      const ev = await api.getWithdrawalEvents(id, token);
+      const ev = await api.getWithdrawalEvents(id);
       setEventsById((m) => ({ ...m, [id]: ev }));
       setOpenAudit(id);
     } catch (e) {
@@ -170,7 +170,7 @@ export default function WithdrawalsSection({ campaign, milestones = [], user, to
     setBusyId(id);
     setError('');
     try {
-      const wr = await api.getWithdrawal(id, token);
+      const wr = await api.getWithdrawal(id);
       const unsignedXdr = wr.unsigned_xdr;
       if (!unsignedXdr) throw new Error('Missing unsigned transaction');
 
@@ -221,7 +221,7 @@ export default function WithdrawalsSection({ campaign, milestones = [], user, to
     }
   }
 
-  if (!token || forbidden) return null;
+  if (!user || forbidden) return null;
   if (loading) {
     return (
       <section style={styles.section} aria-label="Fund release">
@@ -705,4 +705,4 @@ const styles = {
     color: 'var(--color-text-secondary)',
     lineHeight: 1.5,
   },
-};
+};
