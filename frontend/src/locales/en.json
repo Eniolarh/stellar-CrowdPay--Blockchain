@@ -333,5 +333,11 @@
     "goalReached": "Goal reached",
     "campaignEnded": "Campaign ended",
     "campaignClosed": "Campaign closed"
+  },
+  "transactionStatus": {
+    "indexed": "Indexed",
+    "submitted": "Submitted",
+    "failed": "Failed",
+    "pendingSignatures": "Pending signatures"
   }
 }
