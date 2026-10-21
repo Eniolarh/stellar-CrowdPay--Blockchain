@@ -15,18 +15,20 @@
  */
 const logger = require('../config/logger');
 
-function intEnv(name, fallback) {
-  const value = parseInt(process.env[name], 10);
+function positiveInt(raw, fallback) {
+  const value = parseInt(raw, 10);
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+// Each variable is read by its literal name so env tooling (and the
+// .env.example parity test) can see which ones the backend uses.
 function getConfig() {
   return {
-    maxFailures: intEnv('LOGIN_MAX_FAILURES', 5),
-    lockBaseMinutes: intEnv('LOGIN_LOCK_BASE_MINUTES', 15),
-    lockMaxMinutes: intEnv('LOGIN_LOCK_MAX_MINUTES', 24 * 60),
-    maxAttemptsPerHour: intEnv('LOGIN_MAX_ATTEMPTS_PER_HOUR', 20),
-    burstAlertThreshold: intEnv('LOGIN_BURST_ALERT_THRESHOLD', 10),
+    maxFailures: positiveInt(process.env.LOGIN_MAX_FAILURES, 5),
+    lockBaseMinutes: positiveInt(process.env.LOGIN_LOCK_BASE_MINUTES, 15),
+    lockMaxMinutes: positiveInt(process.env.LOGIN_LOCK_MAX_MINUTES, 24 * 60),
+    maxAttemptsPerHour: positiveInt(process.env.LOGIN_MAX_ATTEMPTS_PER_HOUR, 20),
+    burstAlertThreshold: positiveInt(process.env.LOGIN_BURST_ALERT_THRESHOLD, 10),
   };
 }
 
