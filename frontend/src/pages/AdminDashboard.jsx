@@ -5,6 +5,11 @@ import { useNavigate } from 'react-router-dom';
 
 const DISPUTE_STATUSES = ['open', 'under_review', 'resolved_creator', 'resolved_contributor', 'closed'];
 
+const ADMIN_TABS = [
+  { id: 'campaigns', label: 'Campaigns' },
+  { id: 'disputes', label: 'Dispute Queue' },
+];
+
 function DisputeQueue() {
   const [disputes, setDisputes] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -190,6 +195,7 @@ function CampaignsQueue() {
 export default function AdminDashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const [activeTab, setActiveTab] = useState('campaigns');
 
   useEffect(() => {
     if (!user || user.role !== 'admin') {
@@ -197,15 +203,88 @@ export default function AdminDashboard() {
     }
   }, [user, navigate]);
 
+  function handleTablistKeyDown(e) {
+    const currentIndex = ADMIN_TABS.findIndex((tab) => tab.id === activeTab);
+    let nextIndex = currentIndex;
+    if (e.key === 'ArrowRight') {
+      nextIndex = (currentIndex + 1) % ADMIN_TABS.length;
+    } else if (e.key === 'ArrowLeft') {
+      nextIndex = (currentIndex - 1 + ADMIN_TABS.length) % ADMIN_TABS.length;
+    } else if (e.key === 'Home') {
+      nextIndex = 0;
+    } else if (e.key === 'End') {
+      nextIndex = ADMIN_TABS.length - 1;
+    } else {
+      return;
+    }
+    e.preventDefault();
+    setActiveTab(ADMIN_TABS[nextIndex].id);
+    document.getElementById(`tab-${ADMIN_TABS[nextIndex].id}`)?.focus();
+  }
+
   return (
     <div style={{ maxWidth: '860px', margin: '2rem auto', padding: '0 1rem' }}>
       <h1 style={{ marginBottom: '1.5rem' }}>Admin Dashboard</h1>
-      
-      <h2 style={{ marginBottom: '1rem' }}>Campaigns</h2>
-      <CampaignsQueue />
 
-      <h2 style={{ marginBottom: '1rem', marginTop: '2rem' }}>Dispute Queue</h2>
-      <DisputeQueue />
+      <div
+        role="tablist"
+        aria-label="Admin sections"
+        onKeyDown={handleTablistKeyDown}
+        style={{
+          display: 'flex',
+          gap: '0.5rem',
+          marginBottom: '1.5rem',
+          borderBottom: '1px solid var(--color-border)',
+          paddingBottom: '0.5rem',
+        }}
+      >
+        {ADMIN_TABS.map((tab) => (
+          <button
+            key={tab.id}
+            id={`tab-${tab.id}`}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            aria-controls={`panel-${tab.id}`}
+            tabIndex={activeTab === tab.id ? 0 : -1}
+            onClick={() => setActiveTab(tab.id)}
+            style={{
+              padding: '0.5rem 1rem',
+              borderRadius: '8px',
+              border: 'none',
+              cursor: 'pointer',
+              fontWeight: 600,
+              fontSize: '0.9rem',
+              background: activeTab === tab.id ? 'var(--color-accent)' : 'transparent',
+              color: activeTab === tab.id ? '#fff' : 'var(--color-text-secondary)',
+            }}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'campaigns' && (
+        <section
+          id="panel-campaigns"
+          role="tabpanel"
+          aria-labelledby="tab-campaigns"
+          tabIndex={0}
+        >
+          <CampaignsQueue />
+        </section>
+      )}
+
+      {activeTab === 'disputes' && (
+        <section
+          id="panel-disputes"
+          role="tabpanel"
+          aria-labelledby="tab-disputes"
+          tabIndex={0}
+        >
+          <DisputeQueue />
+        </section>
+      )}
     </div>
   );
 }
