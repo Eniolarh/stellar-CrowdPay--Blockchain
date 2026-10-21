@@ -99,7 +99,7 @@ Deprecated aliases still respond but will be removed; new integrations must use 
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| `GET` | `/api/campaigns` | Public | List/search with filters and pagination |
+| `GET` | `/api/campaigns` | Public | List/search with filters. Paginate with `limit` + `cursor` (`next_cursor` from the previous page) for `sort=newest` / `most_funded`; `offset` still works but is slower on deep pages |
 | `POST` | `/api/campaigns` | User | Creator/admin; requires verified email (and KYC when enforced) |
 | `GET` | `/api/campaigns/mine` | User | Campaigns the user created |
 | `GET` | `/api/campaigns/categories` | Public | |
@@ -455,12 +455,21 @@ For a custom anchor, configure `ANCHOR_CUSTOM_ID`, `ANCHOR_CUSTOM_NAME`, `ANCHOR
 
 ### `GET /api/contributions/campaign/:campaignId`
 
-Fetch indexed contributions with conversion audit fields.
+Fetch indexed contributions with conversion audit fields, newest first.
+
+Query params: `limit` (default 20, max 100) and `cursor` (the `next_cursor` of the previous
+page). Cursor pages are index range scans, so deep pages stay fast. `offset` is still accepted
+for older clients (the response then echoes `offset` and `next_cursor` is `null`). `total` is
+only returned on the first page.
 
 Success response (`200`):
 
 ```json
-[
+{
+  "total": 128,
+  "limit": 20,
+  "next_cursor": "eyJzIjoiY29udHJpYnV0aW9uc19uZXdlc3QiLCJ2Ijoi...",
+  "contributions": [
   {
     "id": "0f3f...",
     "sender_public_key": "G...",
@@ -474,8 +483,11 @@ Success response (`200`):
     "tx_hash": "c8d6...",
     "created_at": "2026-04-23T08:13:34.392Z"
   }
-]
+  ]
+}
 ```
+
+`sender_public_key` and refund fields are only included for admins and campaign members.
 
 ### `GET /api/withdrawals/capabilities`
 

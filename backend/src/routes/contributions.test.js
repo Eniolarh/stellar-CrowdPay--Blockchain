@@ -901,3 +901,88 @@ test('POST /api/contributions/prepare and /submit-signed have rate limiting appl
   assert.ok(router.stack.some((layer) => layer.route && layer.route.path === '/prepare'));
   assert.ok(router.stack.some((layer) => layer.route && layer.route.path === '/submit-signed'));
 });
+
+// ---- backer wall keyset pagination ------------------------------------------
+
+const WALL_CAMPAIGN = '11111111-1111-1111-1111-111111111111';
+
+function wallRows(n, startMinute = 0) {
+  return Array.from({ length: n }, (_, i) => ({
+    id: `00000000-0000-4000-8000-${String(startMinute + i).padStart(12, '0')}`,
+    sender_public_key: 'GSENDER',
+    amount: '1',
+    asset: 'XLM',
+    created_at: new Date(Date.UTC(2026, 9, 21, 10, 59 - (startMinute + i))).toISOString(),
+    _cursor_value: `2026-10-21 10:${String(59 - (startMinute + i)).padStart(2, '0')}:00.123456+00`,
+  }));
+}
+
+function wallApp(pageRows) {
+  const queries = [];
+  const app = buildApp({
+    queryImpl: async (text, params) => {
+      queries.push({ text, params });
+      if (text.includes('COUNT(*)::int AS total FROM contributions')) return { rows: [{ total: 42 }] };
+      if (text.includes('FROM contributions c')) return { rows: pageRows };
+      return { rows: [] };
+    },
+  });
+  return { app, queries };
+}
+
+test('GET /api/contributions/campaign/:id returns a first page with next_cursor and total', async () => {
+  const { app, queries } = wallApp(wallRows(3));
+  const res = await request(app).get(`/api/contributions/campaign/${WALL_CAMPAIGN}?limit=2`);
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.contributions.length, 2);
+  assert.equal(res.body.total, 42);
+  assert.ok(res.body.next_cursor);
+  assert.ok(!('offset' in res.body));
+  assert.ok(!('_cursor_value' in res.body.contributions[0]));
+
+  const page = queries.find((q) => q.text.includes('FROM contributions c'));
+  assert.match(page.text, /ORDER BY c\.created_at DESC, c\.id DESC/);
+  assert.doesNotMatch(page.text, /OFFSET/);
+  assert.deepEqual(page.params, [WALL_CAMPAIGN, 3], 'fetches limit + 1 to detect more pages');
+});
+
+test('GET /api/contributions/campaign/:id continues from a cursor with a keyset filter and no count', async () => {
+  const first = wallApp(wallRows(3));
+  const cursor = (await request(first.app).get(`/api/contributions/campaign/${WALL_CAMPAIGN}?limit=2`)).body.next_cursor;
+
+  const { app, queries } = wallApp(wallRows(1, 2));
+  const res = await request(app).get(`/api/contributions/campaign/${WALL_CAMPAIGN}?limit=2&cursor=${cursor}`);
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.next_cursor, null, 'last page');
+  assert.ok(!('total' in res.body));
+  assert.ok(!queries.some((q) => q.text.includes('COUNT(*)')));
+  const page = queries.find((q) => q.text.includes('FROM contributions c'));
+  assert.match(page.text, /\(c\.created_at, c\.id\) < \(\$2::timestamptz, \$3::uuid\)/);
+  assert.deepEqual(page.params, [
+    WALL_CAMPAIGN,
+    '2026-10-21 10:58:00.123456+00',
+    '00000000-0000-4000-8000-000000000001',
+    3,
+  ]);
+});
+
+test('GET /api/contributions/campaign/:id keeps legacy ?offset paging', async () => {
+  const { app, queries } = wallApp(wallRows(2));
+  const res = await request(app).get(`/api/contributions/campaign/${WALL_CAMPAIGN}?limit=2&offset=40`);
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.offset, 40);
+  assert.equal(res.body.next_cursor, null);
+  const page = queries.find((q) => q.text.includes('FROM contributions c'));
+  assert.match(page.text, /OFFSET \$3/);
+  assert.deepEqual(page.params, [WALL_CAMPAIGN, 2, 40]);
+});
+
+test('GET /api/contributions/campaign/:id rejects a malformed cursor with 400', async () => {
+  const { app } = wallApp([]);
+  const res = await request(app).get(`/api/contributions/campaign/${WALL_CAMPAIGN}?cursor=not-a-cursor`);
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error.code, 'INVALID_CURSOR');
+});

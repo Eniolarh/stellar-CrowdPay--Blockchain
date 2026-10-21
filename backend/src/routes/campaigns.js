@@ -28,6 +28,13 @@ const {
   validateRequest,
 } = require('../middleware/validation');
 const asyncHandler = require('../utils/asyncHandler');
+const { decodeCursor, pageWithCursor } = require('../utils/pagination');
+
+/** Listing sorts that support keyset (cursor) pagination. */
+const KEYSET_SORTS = {
+  newest: { name: 'newest', column: 'c.created_at', cast: 'timestamptz' },
+  most_funded: { name: 'most_funded', column: 'c.raised_amount', cast: 'numeric' },
+};
 
 const crypto = require('crypto');
 const { sendErrorResponse } = require('../middleware/errorHandler');
@@ -247,6 +254,11 @@ router.get('/', getCampaignsValidation, validateRequest, asyncHandler(async (req
    *       - in: query
    *         name: offset
    *         schema: { type: integer, minimum: 0 }
+   *         description: Legacy offset paging. Prefer `cursor` for sort=newest / most_funded.
+   *       - in: query
+   *         name: cursor
+   *         schema: { type: string }
+   *         description: Opaque `next_cursor` from the previous page (sort=newest or most_funded).
    *     responses:
    *       200:
    *         description: OK
@@ -255,9 +267,10 @@ router.get('/', getCampaignsValidation, validateRequest, asyncHandler(async (req
    *             schema:
    *               type: object
    *               properties:
-   *                 total: { type: integer }
+   *                 total: { type: integer, description: Only on the first page }
    *                 limit: { type: integer }
-   *                 offset: { type: integer }
+   *                 offset: { type: integer, description: Only for offset-paged requests }
+   *                 next_cursor: { type: string, nullable: true }
    *                 campaigns:
    *                   type: array
    *                   items:
@@ -294,11 +307,59 @@ router.get('/', getCampaignsValidation, validateRequest, asyncHandler(async (req
     );
   }
 
-  const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
-  const countQuery = `SELECT COUNT(*)::int AS total FROM campaigns c ${whereClause}`;
-  const countResult = await db.query(countQuery, params);
-  const total = countResult.rows[0]?.total || 0;
+  // Keyset (cursor) pagination for the hot sorts: a page is an index range
+  // scan on (sort value, id) instead of scanning and discarding OFFSET rows.
+  // Clients still paging with ?offset=N keep the legacy path.
+  const cursorParam = req.query.cursor;
+  const keyset = KEYSET_SORTS[sort] && (cursorParam !== undefined || offset === 0) ? KEYSET_SORTS[sort] : null;
+  if (cursorParam !== undefined && !keyset) {
+    return sendErrorResponse(res, 400, `cursor is only supported for sort=${Object.keys(KEYSET_SORTS).join(' or ')}`);
+  }
 
+  // The full count is only computed for the first page.
+  let total;
+  if (cursorParam === undefined) {
+    const countWhere = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+    const countResult = await db.query(`SELECT COUNT(*)::int AS total FROM campaigns c ${countWhere}`, params);
+    total = countResult.rows[0]?.total || 0;
+  }
+
+  if (keyset) {
+    if (cursorParam !== undefined) {
+      let cursor;
+      try {
+        cursor = decodeCursor(cursorParam, keyset.name);
+      } catch (err) {
+        return sendErrorResponse(res, 400, err.message, undefined, 'INVALID_CURSOR');
+      }
+      params.push(cursor.value, cursor.id);
+      filters.push(`(${keyset.column}, c.id) < ($${params.length - 1}::${keyset.cast}, $${params.length}::uuid)`);
+    }
+    const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+    const { rows } = await db.query(
+      `SELECT c.*,
+              ${keyset.column}::text AS _cursor_value,
+              u.name AS creator_name,
+              u.kyc_status AS creator_kyc_status,
+              (SELECT COUNT(*)::int FROM campaign_updates cu WHERE cu.campaign_id = c.id) AS updates_count,
+              (SELECT COUNT(DISTINCT sender_public_key)::int FROM contributions con WHERE con.campaign_id = c.id) AS contributor_count
+         FROM campaigns c
+         JOIN users u ON u.id = c.creator_id
+         ${whereClause}
+        ORDER BY ${keyset.column} DESC, c.id DESC
+        LIMIT $${params.length + 1}`,
+      [...params, limit + 1]
+    );
+    const { page, nextCursor } = pageWithCursor(rows, limit, { sort: keyset.name });
+    return res.json({
+      ...(total !== undefined && { total }),
+      limit,
+      next_cursor: nextCursor,
+      campaigns: page,
+    });
+  }
+
+  const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
   const sortExpressions = {
     newest: 'c.created_at DESC',
     ending_soon: 'c.deadline ASC NULLS LAST',
@@ -325,7 +386,7 @@ router.get('/', getCampaignsValidation, validateRequest, asyncHandler(async (req
   `;
   const result = await db.query(query, [...params, limit, offset]);
 
-  res.json({ total, limit, offset, campaigns: result.rows });
+  res.json({ total, limit, offset, next_cursor: null, campaigns: result.rows });
 }));
 
 router.get('/mine', requireAuth, asyncHandler(async (req, res) => {

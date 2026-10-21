@@ -35,6 +35,10 @@ const {
   submitCustodialContribution,
 } = require('../services/contributionService');
 const { listUserContributions } = require('../services/userDashboardService');
+const { decodeCursor, pageWithCursor } = require('../utils/pagination');
+
+/** Cursor namespace for the per-campaign backer wall. */
+const BACKER_WALL_SORT = 'contributions_newest';
 const asyncHandler = require('../utils/asyncHandler');
 const { parseAmountToStroops, formatStroops } = require('../utils/amounts');
 const { sendErrorResponse } = require('../middleware/errorHandler');
@@ -177,6 +181,19 @@ router.get('/mine', requireAuth, asyncHandler(async (req, res) => {
 router.get('/campaign/:campaignId', publicContributionReadLimiter, optionalAuth, async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit) || 20, 100);
   const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+  // Keyset pagination on (created_at, id): a cursor, or the first page with
+  // no offset, avoids scanning and discarding OFFSET rows. ?offset=N keeps
+  // working for older clients.
+  const cursorParam = req.query.cursor;
+  const useKeyset = cursorParam !== undefined || offset === 0;
+  let cursor = null;
+  if (cursorParam !== undefined) {
+    try {
+      cursor = decodeCursor(cursorParam, BACKER_WALL_SORT);
+    } catch (err) {
+      return sendErrorResponse(res, 400, err.message, undefined, 'INVALID_CURSOR');
+    }
+  }
 
   // Determine if the requester has elevated privileges (admin or campaign organizer)
   const requestUserId = req.user?.userId;
@@ -198,13 +215,26 @@ router.get('/campaign/:campaignId', publicContributionReadLimiter, optionalAuth,
     }
   }
 
+  const params = [req.params.campaignId];
+  let keysetFilter = '';
+  if (cursor) {
+    params.push(cursor.value, cursor.id);
+    keysetFilter = 'AND (c.created_at, c.id) < ($2::timestamptz, $3::uuid)';
+  }
+  params.push(useKeyset ? limit + 1 : limit);
+  const limitParam = `$${params.length}`;
+  let offsetClause = '';
+  if (!useKeyset) {
+    params.push(offset);
+    offsetClause = `OFFSET $${params.length}`;
+  }
+
   const { rows } = await db.query(
     `SELECT c.id, c.sender_public_key, c.amount, c.asset, c.payment_type,
             c.anchor_id, c.anchor_transaction_id, c.anchor_asset, c.anchor_amount,
             c.source_amount, c.source_asset, c.conversion_rate, c.path,
-            c.tx_hash, c.created_at,
-            wr.status AS refund_status, wr.tx_hash AS refund_tx_hash,
-            COUNT(*) OVER() AS total_count
+            c.tx_hash, c.created_at, c.created_at::text AS _cursor_value,
+            wr.status AS refund_status, wr.tx_hash AS refund_tx_hash
      FROM contributions c
      LEFT JOIN LATERAL (
        SELECT status, tx_hash
@@ -213,20 +243,38 @@ router.get('/campaign/:campaignId', publicContributionReadLimiter, optionalAuth,
        ORDER BY created_at DESC
        LIMIT 1
      ) wr ON TRUE
-     WHERE c.campaign_id = $1
-     ORDER BY c.created_at DESC
-     LIMIT $2 OFFSET $3`,
-    [req.params.campaignId, limit, offset]
+     WHERE c.campaign_id = $1 ${keysetFilter}
+     ORDER BY c.created_at DESC, c.id DESC
+     LIMIT ${limitParam} ${offsetClause}`,
+    params
   );
 
-  const total = rows[0]?.total_count ?? 0;
-  const cleanedRows = rows.map(({ total_count, ...rest }) => {
-    if (isPrivileged) return rest;
+  // The total is only counted for the first page (or legacy offset pages).
+  let total;
+  if (!cursor) {
+    const { rows: countRows } = await db.query(
+      'SELECT COUNT(*)::int AS total FROM contributions WHERE campaign_id = $1',
+      [req.params.campaignId]
+    );
+    total = Number(countRows[0]?.total ?? 0);
+  }
+
+  const { page, nextCursor } = useKeyset
+    ? pageWithCursor(rows, limit, { sort: BACKER_WALL_SORT })
+    : pageWithCursor(rows, rows.length + 1);
+  const cleanedRows = page.map((row) => {
+    if (isPrivileged) return row;
     // Redact sender identity and refund details from public view
-    const { sender_public_key: _spk, refund_status: _rs, refund_tx_hash: _rth, ...publicRow } = rest;
+    const { sender_public_key: _spk, refund_status: _rs, refund_tx_hash: _rth, ...publicRow } = row;
     return publicRow;
   });
-  res.json({ contributions: cleanedRows, total: Number(total), limit, offset });
+  res.json({
+    contributions: cleanedRows,
+    ...(total !== undefined && { total }),
+    limit,
+    ...(!useKeyset && { offset }),
+    next_cursor: nextCursor,
+  });
 });
 
 // List contributions for the authenticated user (alias for /api/contributions/mine)
