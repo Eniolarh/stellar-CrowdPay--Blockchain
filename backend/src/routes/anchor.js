@@ -15,7 +15,15 @@ const {
   getAnchorTransaction,
   isAnchorFailureStatus,
 } = require('../services/anchorService');
-const { parseAmountToStroops, formatStroops } = require('../utils/amounts');
+const { parseAmountToStroops, formatStroops, tryParseAmountToStroops } = require('../utils/amounts');
+
+/** 422 for a malformed or non-positive amount; null when it is valid. */
+function rejectInvalidAmount(res, amount) {
+  const stroops = tryParseAmountToStroops(amount);
+  if (stroops !== null && stroops > 0n) return null;
+  const message = 'amount must be a positive decimal number with at most 7 decimal places';
+  return sendErrorResponse(res, 422, message, { amount: message });
+}
 const { sendErrorResponse } = require('../middleware/errorHandler');
 
 function mapSessionForClient(row) {
@@ -374,6 +382,7 @@ router.post('/deposits/start', requireAuth, async (req, res) => {
   if (!campaign_id || !amount || !anchor_id) {
     return sendErrorResponse(res, 400, 'campaign_id, amount and anchor_id are required');
   }
+  if (rejectInvalidAmount(res, amount)) return;
 
   const anchor = getAnchorById(anchor_id);
   if (!anchor) {
@@ -553,6 +562,7 @@ router.post('/sep24/deposit', requireAuth, async (req, res) => {
   if (!amount || !anchor_id) {
     return sendErrorResponse(res, 400, 'amount and anchor_id are required');
   }
+  if (rejectInvalidAmount(res, amount)) return;
 
   const anchor = getAnchorById(anchor_id);
   if (!anchor) {

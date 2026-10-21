@@ -40,7 +40,7 @@ const { decodeCursor, pageWithCursor } = require('../utils/pagination');
 /** Cursor namespace for the per-campaign backer wall. */
 const BACKER_WALL_SORT = 'contributions_newest';
 const asyncHandler = require('../utils/asyncHandler');
-const { parseAmountToStroops, formatStroops } = require('../utils/amounts');
+const { parseAmountToStroops, parseUserAmount, formatStroops } = require('../utils/amounts');
 const { sendErrorResponse } = require('../middleware/errorHandler');
 
 const SUPPORTED_ASSETS = getSupportedAssetCodes();
@@ -416,7 +416,7 @@ router.get('/quote', requireAuth, contributionQuoteValidation, validateRequest, 
   res.json({
     send_asset,
     dest_asset,
-    dest_amount: formatStroops(parseAmountToStroops(dest_amount)),
+    dest_amount: formatStroops(parseUserAmount(dest_amount, 'dest_amount')),
     quoted_source_amount: bestPath.source_amount,
     max_send_amount: maxSendWithSlippage,
     estimated_rate: (
@@ -429,6 +429,8 @@ router.get('/quote', requireAuth, contributionQuoteValidation, validateRequest, 
 
 router.post('/prepare', requireAuth, prepareLimiter, contributionValidation, validateRequest, asyncHandler(async (req, res) => {
   const { campaign_id, amount, send_asset, sender_public_key, display_name } = req.body;
+  // Malformed amounts are a 422 VALIDATION_ERROR (field: amount), not a 500.
+  parseUserAmount(amount);
   if (!sender_public_key) {
     return sendErrorResponse(res, 422, 'sender_public_key is required for Freighter contributions', {
       sender_public_key: 'sender_public_key is required for Freighter contributions',
@@ -443,7 +445,7 @@ router.post('/prepare', requireAuth, prepareLimiter, contributionValidation, val
   const campaign = await loadActiveCampaign(campaign_id);
   if (!campaign) return sendErrorResponse(res, 404, 'Campaign not found');
 
-  if (campaign.min_contribution && parseAmountToStroops(amount) < parseAmountToStroops(campaign.min_contribution)) {
+  if (campaign.min_contribution && parseUserAmount(amount) < parseAmountToStroops(campaign.min_contribution)) {
     return sendErrorResponse(res, 400, `Contribution amount is below the minimum limit of ${campaign.min_contribution} ${campaign.asset_type}`);
   }
 
@@ -453,7 +455,7 @@ router.post('/prepare', requireAuth, prepareLimiter, contributionValidation, val
       [campaign_id, sender_public_key]
     );
     const totalExisting = parseAmountToStroops(sumRows[0].total);
-    if (totalExisting + parseAmountToStroops(amount) > parseAmountToStroops(campaign.max_contribution)) {
+    if (totalExisting + parseUserAmount(amount) > parseAmountToStroops(campaign.max_contribution)) {
       return sendErrorResponse(res, 400, `Contribution violates the maximum limit of ${campaign.max_contribution} ${campaign.asset_type} per backer`);
     }
   }
@@ -687,6 +689,8 @@ router.post(
      *         description: Campaign not found
      */
     const { campaign_id, amount, send_asset, display_name } = req.body;
+    // Malformed amounts are a 422 VALIDATION_ERROR (field: amount), not a 500.
+    parseUserAmount(amount);
 
     const campaign = await loadActiveCampaign(campaign_id);
     if (!campaign) return sendErrorResponse(res, 404, 'Campaign not found');
@@ -700,12 +704,12 @@ router.post(
 
 if (
     campaign.min_contribution &&
-    parseAmountToStroops(amount) < parseAmountToStroops(campaign.min_contribution)
+    parseUserAmount(amount) < parseAmountToStroops(campaign.min_contribution)
   ) {
     return sendErrorResponse(res, 400, `Minimum contribution is ${campaign.min_contribution} ${campaign.asset_type}`);
   }
 
-  if (campaign.max_contribution && parseAmountToStroops(amount) > parseAmountToStroops(campaign.max_contribution)) {
+  if (campaign.max_contribution && parseUserAmount(amount) > parseAmountToStroops(campaign.max_contribution)) {
     return sendErrorResponse(res, 400, `Maximum contribution is ${campaign.max_contribution} ${campaign.asset_type}`);
   }
 
@@ -715,7 +719,7 @@ if (
       [campaign_id, contributorPublicKey],
     );
     const alreadyContributed = parseAmountToStroops(userCapRows[0].total);
-    if (alreadyContributed + parseAmountToStroops(amount) > parseAmountToStroops(campaign.max_per_user)) {
+    if (alreadyContributed + parseUserAmount(amount) > parseAmountToStroops(campaign.max_per_user)) {
       return sendErrorResponse(res, 400, `You have already contributed ${formatStroops(alreadyContributed)} ${campaign.asset_type}. The per-contributor limit is ${campaign.max_per_user}.`);
     }
   }
@@ -770,7 +774,7 @@ if (
       return sendErrorResponse(res, 503, "Wallet setup is still completing; please retry in a few seconds.");
     }
 
-    if (parseAmountToStroops(campaign.raised_amount) + parseAmountToStroops(amount) >= parseAmountToStroops(campaign.target_amount)) {
+    if (parseAmountToStroops(campaign.raised_amount) + parseUserAmount(amount) >= parseAmountToStroops(campaign.target_amount)) {
       sendEmailSafe({
         to: campaign.creator_email,
         subject: `Target Reached for ${campaign.title}!`,

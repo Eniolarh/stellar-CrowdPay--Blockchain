@@ -222,6 +222,8 @@ function buildApp({ queryImpl, stellarImpl, stellarTxImpl }) {
   const app = express();
   app.use(express.json());
   app.use('/api/contributions', router);
+  // Same terminal handler as src/index.js, so thrown errors get the envelope.
+  app.use(require('../middleware/errorHandler').errorHandler);
   return app;
 }
 
@@ -985,4 +987,40 @@ test('GET /api/contributions/campaign/:id rejects a malformed cursor with 400', 
   const res = await request(app).get(`/api/contributions/campaign/${WALL_CAMPAIGN}?cursor=not-a-cursor`);
   assert.equal(res.status, 400);
   assert.equal(res.body.error.code, 'INVALID_CURSOR');
+});
+
+// ---- malformed amounts are client errors, not 500s ---------------------------
+
+test('malformed contribution amounts answer 422 VALIDATION_ERROR with a field message', async () => {
+  const app = buildApp({
+    queryImpl: async () => {
+      throw new Error('DB must not be reached for a malformed amount');
+    },
+  });
+
+  for (const [path, body] of [
+    ['/api/contributions', { campaign_id: WALL_CAMPAIGN, amount: 'abc', send_asset: 'XLM' }],
+    ['/api/contributions', { campaign_id: WALL_CAMPAIGN, amount: '1e5', send_asset: 'XLM' }],
+    ['/api/contributions/prepare', { campaign_id: WALL_CAMPAIGN, amount: '-3', send_asset: 'XLM', sender_public_key: 'G' }],
+  ]) {
+    const res = await request(app).post(path).set('Authorization', 'Bearer token').send(body);
+    assert.equal(res.status, 422, `${path} ${body.amount}`);
+    assert.equal(res.body.error.code, 'VALIDATION_ERROR');
+    assert.ok(res.body.error.fields.amount);
+  }
+});
+
+test('a malformed quote dest_amount answers 422, not 500', async () => {
+  const app = buildApp({
+    queryImpl: async () => ({ rows: [{ id: WALL_CAMPAIGN, asset_type: 'USDC', status: 'active', wallet_public_key: 'GDEST' }] }),
+    stellarImpl: {
+      getPathPaymentQuote: async () => [{ source_amount: '1', source_asset: 'XLM', path: [] }],
+    },
+  });
+  const res = await request(app)
+    .get(`/api/contributions/quote?campaign_id=${WALL_CAMPAIGN}&send_asset=XLM&dest_asset=USDC&dest_amount=1e5`)
+    .set('Authorization', 'Bearer token');
+  assert.equal(res.status, 422);
+  assert.equal(res.body.error.code, 'VALIDATION_ERROR');
+  assert.ok(res.body.error.fields.dest_amount);
 });
