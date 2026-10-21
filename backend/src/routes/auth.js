@@ -11,6 +11,7 @@ const { sendEmail, sendEmailSafe, reserveEmailSend } = require('../services/emai
 const { requireAuth } = require('../middleware/auth');
 const { encryptWalletSecret } = require('../services/walletSecrets');
 const { isKycRequiredForCampaigns } = require('../services/kycProvider');
+const loginLockout = require('../services/loginLockout');
 const {
   registerValidation,
   loginValidation,
@@ -86,6 +87,19 @@ const loginLimiter = rateLimit({
   legacyHeaders: false,
   skip: () => isTest,
 });
+
+/** 429 for a locked (or hourly-capped) account; same response whether or not it exists. */
+function sendAccountLocked(res, retryAfterSeconds) {
+  res.set('Retry-After', String(retryAfterSeconds));
+  return sendErrorResponse(
+    res,
+    429,
+    'Too many failed login attempts for this account. Try again later.',
+    undefined,
+    'ACCOUNT_LOCKED',
+    { retry_after_seconds: retryAfterSeconds }
+  );
+}
 
 function hashToken(token) {
   return crypto.createHash('sha256').update(token, 'utf8').digest('hex');
@@ -427,11 +441,28 @@ router.post('/login', loginLimiter, loginValidation, validateRequest, asyncHandl
    */
   const { email, password } = req.body;
   const normalizedEmail = String(email || '').trim().toLowerCase();
+
+  // Per-account protection, checked before any password comparison: a locked
+  // email is rejected even with the correct password.
+  const gate = await loginLockout.checkLoginAllowed(db, normalizedEmail, { ip: req.ip });
+  if (!gate.allowed) {
+    return sendAccountLocked(res, gate.retryAfterSeconds);
+  }
+
   const { rows } = await db.query('SELECT * FROM users WHERE LOWER(email) = $1', [normalizedEmail]);
 
   if (!rows.length || !(await bcrypt.compare(password, rows[0].password_hash))) {
+    const failure = await loginLockout.recordLoginFailure(db, normalizedEmail, {
+      userId: rows[0]?.id ?? null,
+      ip: req.ip,
+    });
+    if (failure.locked) {
+      return sendAccountLocked(res, Math.ceil((failure.lockedUntil - Date.now()) / 1000));
+    }
     return sendErrorResponse(res, 401, 'Invalid credentials');
   }
+
+  await loginLockout.recordLoginSuccess(db, normalizedEmail, { userId: rows[0].id, ip: req.ip });
 
   const user = rows[0];
   const { accessToken } = generateTokens(user);
