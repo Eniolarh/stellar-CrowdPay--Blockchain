@@ -230,12 +230,14 @@ router.get('/', getCampaignsValidation, validateRequest, asyncHandler(async (req
     params.push(asset);
     filters.push(`c.asset_type = $${params.length}`);
   }
-  if (search) {
-    const escaped = String(search).replace(/[%_\\]/g, '\\$&');
-    params.push(`%${escaped}%`);
-    filters.push(
-      `(c.title ILIKE $${params.length} OR COALESCE(c.description, '') ILIKE $${params.length})`
-    );
+  let searchParam = null;
+  if (search && String(search).trim()) {
+    searchParam = String(search).trim();
+    params.push(searchParam);
+    // Use PostgreSQL full-text search via the generated tsvector column (search_vector)
+    // set up by migration 20260602_campaign_search_vector.sql.
+    // plainto_tsquery handles multi-word queries and is injection-safe.
+    filters.push(`c.search_vector @@ plainto_tsquery('english', $${params.length})`);
   }
 
   const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
@@ -252,7 +254,20 @@ router.get('/', getCampaignsValidation, validateRequest, asyncHandler(async (req
     trending:
       "(SELECT COUNT(*) FROM contributions ctr WHERE ctr.campaign_id = c.id AND ctr.created_at >= NOW() - INTERVAL '7 days') DESC, c.created_at DESC",
   };
-  const orderBy = sortExpressions[sort] || sortExpressions.newest;
+
+  // When a search query is present, order by relevance (ts_rank) first, then the selected sort.
+  // ts_rank requires a separate parameter reference to the tsquery.
+  let orderBy;
+  let queryParams;
+  if (searchParam) {
+    params.push(searchParam); // additional param for ts_rank
+    const rankParamIdx = params.length;
+    orderBy = `ts_rank(c.search_vector, plainto_tsquery('english', $${rankParamIdx})) DESC, ${sortExpressions[sort] || sortExpressions.newest}`;
+    queryParams = [...params, limit, offset];
+  } else {
+    orderBy = sortExpressions[sort] || sortExpressions.newest;
+    queryParams = [...params, limit, offset];
+  }
 
   const query = `
     SELECT c.*,
@@ -264,10 +279,10 @@ router.get('/', getCampaignsValidation, validateRequest, asyncHandler(async (req
     JOIN users u ON u.id = c.creator_id
     ${whereClause}
     ORDER BY ${orderBy}
-    LIMIT $${params.length + 1}
-    OFFSET $${params.length + 2}
+    LIMIT $${queryParams.length - 1}
+    OFFSET $${queryParams.length}
   `;
-  const result = await db.query(query, [...params, limit, offset]);
+  const result = await db.query(query, queryParams);
 
   res.json({ total, limit, offset, campaigns: result.rows });
 }));
