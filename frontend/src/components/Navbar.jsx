@@ -7,7 +7,8 @@ import NotificationDropdown from './NotificationDropdown';
 
 export default function Navbar() {
   const { user, logout } = useAuth();
-  const { pathname } = useLocation();
+  const location = useLocation();
+  const { pathname } = location;
   const navigate = useNavigate();
   const { t, i18n } = useTranslation();
   const language = (i18n.resolvedLanguage || i18n.language || 'en').split('-')[0];
@@ -24,10 +25,39 @@ export default function Navbar() {
       setNotifications([]);
       return;
     }
+
+    let intervalId = null;
     const fetchNotifs = () => api.getNotifications().then(setNotifications).catch(() => {});
-    fetchNotifs();
-    const id = setInterval(fetchNotifs, 30_000);
-    return () => clearInterval(id);
+
+    const startPolling = () => {
+      if (intervalId !== null) return;
+      fetchNotifs();
+      intervalId = setInterval(fetchNotifs, 30_000);
+    };
+
+    const stopPolling = () => {
+      if (intervalId === null) return;
+      clearInterval(intervalId);
+      intervalId = null;
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        startPolling();
+      } else {
+        stopPolling();
+      }
+    };
+
+    if (document.visibilityState === 'visible') {
+      startPolling();
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      stopPolling();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, [user]);
 
   // Close dropdown when clicking outside
@@ -164,7 +194,12 @@ export default function Navbar() {
             </>
           ) : (
             <>
-              <Link to="/login" style={styles.link} aria-current={pathname === '/login' ? 'page' : undefined}>
+              <Link
+                to="/login"
+                state={{ from: location.pathname + location.search }}
+                style={styles.link}
+                aria-current={pathname === '/login' ? 'page' : undefined}
+              >
                 {t('nav.login')}
               </Link>
               <Link to="/register" aria-current={pathname === '/register' ? 'page' : undefined}>

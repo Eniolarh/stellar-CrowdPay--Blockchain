@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Link, Navigate, useSearchParams } from 'react-router-dom';
+import { Link, Navigate, useLocation, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../services/api';
 import KycPrompt from '../components/KycPrompt';
@@ -30,6 +30,7 @@ function formatConversionRate(row) {
 
 export default function Dashboard() {
   const { user, token, ready, updateUser } = useAuth();
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const tabParam = searchParams.get('tab');
   const activeTab = tabParam === 'contributions' ? 'contributions' : 'campaigns';
@@ -115,7 +116,15 @@ export default function Dashboard() {
       </main>
     );
   }
-  if (!user) return <Navigate to="/login" replace />;
+  if (!user) {
+    return (
+      <Navigate
+        to="/login"
+        replace
+        state={{ from: location.pathname + location.search }}
+      />
+    );
+  }
 
   const loading = activeTab === 'campaigns' ? loadingCampaigns : loadingContributions;
 
