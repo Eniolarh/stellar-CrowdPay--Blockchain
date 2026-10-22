@@ -66,6 +66,15 @@ export default function Navbar() {
     navigate('/');
   }
 
+  function handleMarkRead(id) {
+    setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read_at: new Date().toISOString() } : n)));
+  }
+
+  async function handleMarkAllRead() {
+    await api.markAllNotificationsRead().catch(() => {});
+    setNotifications((prev) => prev.map((n) => ({ ...n, read_at: n.read_at || new Date().toISOString() })));
+  }
+
   return (
     <nav style={styles.nav} data-no-print>
       <div className="container nav-inner-wrap">
@@ -135,7 +144,7 @@ export default function Navbar() {
                   aria-expanded={showDropdown}
                   aria-controls="notification-menu"
                   style={styles.bellBtn}
-                  aria-label={`${unread} unread notifications`}
+                  aria-label={t('nav.notificationsAria', { count: unread })}
                 >
                   🔔
                   {unread > 0 && <span style={styles.badge}>{unread}</span>}
@@ -183,5 +192,26 @@ const styles = {
     padding: '0.35rem 0.55rem',
     color: 'var(--color-text-secondary)',
     fontSize: '0.85rem',
+  },
+  bellWrap: { position: 'relative' },
+  bellBtn: {
+    position: 'relative',
+    background: 'transparent',
+    border: 'none',
+    fontSize: '1.15rem',
+    lineHeight: '1',
+    cursor: 'pointer',
+    padding: '0.35rem',
+  },
+  badge: {
+    position: 'absolute',
+    top: '-2px',
+    right: '-4px',
+    background: 'var(--color-accent)',
+    color: '#fff',
+    borderRadius: '999px',
+    fontSize: '0.65rem',
+    fontWeight: 700,
+    padding: '1px 5px',
   },
 };
