@@ -13,6 +13,7 @@ const {
   buildUnsignedContributionPayment,
   buildUnsignedContributionPathPayment,
   submitPreparedTransaction,
+  submitWithFeeBumpFallback,
   getPathPaymentQuote,
   getSupportedAssetCodes,
   isBadSequenceError,
@@ -578,7 +579,7 @@ router.post('/submit-signed', requireAuth, submitSignedLimiter, idempotency, asy
 
   let txHash;
   try {
-    txHash = await submitPreparedTransaction(signed_xdr);
+    txHash = await submitWithFeeBumpFallback(signed_xdr);
   } catch (err) {
     if (isCircuitOpenError(err)) {
       logger.warn('Freighter contribution submission blocked by open circuit breaker', {

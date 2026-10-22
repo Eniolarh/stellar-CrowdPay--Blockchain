@@ -377,6 +377,11 @@
     "campaignEnded": "Campagne terminée",
     "campaignClosed": "Campagne fermée"
   },
+  "transactionStatus": {
+    "indexed": "Indexé",
+    "submitted": "Envoyé",
+    "failed": "Échoué",
+    "pendingSignatures": "Signatures en attente"
   "categories": {
     "technology": "Technologie",
     "community": "Communauté",

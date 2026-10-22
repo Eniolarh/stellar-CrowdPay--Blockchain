@@ -28,6 +28,7 @@ const {
   validateRequest,
 } = require('../middleware/validation');
 const asyncHandler = require('../utils/asyncHandler');
+const cache = require('../utils/cache');
 
 const crypto = require('crypto');
 
@@ -281,6 +282,14 @@ router.get('/', getCampaignsValidation, validateRequest, asyncHandler(async (req
     params.push(asset);
     filters.push(`c.asset_type = $${params.length}`);
   }
+  let searchParam = null;
+  if (search && String(search).trim()) {
+    searchParam = String(search).trim();
+    params.push(searchParam);
+    // Use PostgreSQL full-text search via the generated tsvector column (search_vector)
+    // set up by migration 20260602_campaign_search_vector.sql.
+    // plainto_tsquery handles multi-word queries and is injection-safe.
+    filters.push(`c.search_vector @@ plainto_tsquery('english', $${params.length})`);
   if (category) {
     params.push(category);
     filters.push(`c.category = $${params.length}`);
@@ -307,7 +316,20 @@ router.get('/', getCampaignsValidation, validateRequest, asyncHandler(async (req
     trending:
       "(SELECT COUNT(*) FROM contributions ctr WHERE ctr.campaign_id = c.id AND ctr.created_at >= NOW() - INTERVAL '7 days') DESC, c.created_at DESC",
   };
-  const orderBy = sortExpressions[sort] || sortExpressions.newest;
+
+  // When a search query is present, order by relevance (ts_rank) first, then the selected sort.
+  // ts_rank requires a separate parameter reference to the tsquery.
+  let orderBy;
+  let queryParams;
+  if (searchParam) {
+    params.push(searchParam); // additional param for ts_rank
+    const rankParamIdx = params.length;
+    orderBy = `ts_rank(c.search_vector, plainto_tsquery('english', $${rankParamIdx})) DESC, ${sortExpressions[sort] || sortExpressions.newest}`;
+    queryParams = [...params, limit, offset];
+  } else {
+    orderBy = sortExpressions[sort] || sortExpressions.newest;
+    queryParams = [...params, limit, offset];
+  }
 
   const query = `
     SELECT c.*,
@@ -319,17 +341,58 @@ router.get('/', getCampaignsValidation, validateRequest, asyncHandler(async (req
     JOIN users u ON u.id = c.creator_id
     ${whereClause}
     ORDER BY ${orderBy}
-    LIMIT $${params.length + 1}
-    OFFSET $${params.length + 2}
+    LIMIT $${queryParams.length - 1}
+    OFFSET $${queryParams.length}
   `;
-  const result = await db.query(query, [...params, limit, offset]);
+  const result = await db.query(query, queryParams);
 
-  res.json({ total, limit, offset, campaigns: result.rows });
+  const payload = { total, limit, offset, campaigns: result.rows };
+  cache.set(cacheKey, payload, 30_000); // 30 s TTL
+  res.json(payload);
 }));
 
 router.get('/mine', requireAuth, asyncHandler(async (req, res) => {
   const campaigns = await listCreatorCampaigns(req.user.userId);
   res.json(campaigns);
+}));
+
+/**
+ * @openapi
+ * /api/campaigns/categories:
+ *   get:
+ *     tags: [Campaigns]
+ *     summary: List campaign categories with active campaign counts
+ *     responses:
+ *       200:
+ *         description: OK
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   category: { type: string }
+ *                   count: { type: integer }
+ */
+// Cached for 5 minutes — invalidated when a new campaign is created with a category.
+router.get('/categories', asyncHandler(async (req, res) => {
+  const CATEGORIES_CACHE_KEY = 'campaigns:categories';
+  const cached = cache.get(CATEGORIES_CACHE_KEY);
+  if (cached) return res.json(cached);
+
+  const { rows } = await db.query(
+    `SELECT category, COUNT(*)::int AS count
+     FROM campaigns
+     WHERE deleted_at IS NULL
+       AND status NOT IN ('draft', 'failed')
+       AND category IS NOT NULL
+     GROUP BY category
+     ORDER BY count DESC, category ASC`
+  );
+
+  cache.set(CATEGORIES_CACHE_KEY, rows, 5 * 60 * 1000); // 5 min TTL
+  res.json(rows);
 }));
 
 router.get('/:id/milestones', asyncHandler(async (req, res) => {
@@ -462,6 +525,15 @@ router.get('/:id', asyncHandler(async (req, res) => {
    *       404:
    *         description: Not found
    */
+  // Only cache unauthenticated (public) requests — authenticated requests may
+  // include a user_role field that is user-specific and must not be shared.
+  const isAuthenticated = !!(req.headers.authorization);
+  const campaignCacheKey = `campaigns:id:${req.params.id}`;
+  if (!isAuthenticated) {
+    const cached = cache.get(campaignCacheKey);
+    if (cached) return res.json(cached);
+  }
+
   const query = `
     SELECT *,
            (SELECT COUNT(DISTINCT sender_public_key)::int FROM contributions WHERE campaign_id = $1) AS contributor_count
@@ -531,6 +603,12 @@ router.get('/:id', asyncHandler(async (req, res) => {
   const response = { ...campaign, user_role: userRole, user_contributed_amount: userContributedAmount };
   if (campaign.status === 'suspended') {
     response.suspended_notice = 'This campaign has been suspended and cannot receive new contributions';
+  }
+
+  // Cache only unauthenticated responses (no user-specific data) for 15 s.
+  // Invalidated by ledgerMonitor after each contribution is indexed.
+  if (!isAuthenticated) {
+    cache.set(campaignCacheKey, response, 15_000);
   }
 
   res.json(response);
@@ -925,6 +1003,11 @@ router.post('/', requireAuth, requireRole('creator', 'admin'), idempotency, crea
   }
 
   watchCampaignWallet(campaign.id, wallet.publicKey);
+
+  // Invalidate the public campaign list and categories caches so the new campaign
+  // appears immediately on the next request.
+  cache.invalidatePrefix('campaigns:list:');
+  cache.invalidate('campaigns:categories');
 
   // Contracts are deployed in the background; the campaign stays soroban_status='pending'
   // (on_chain=false) until deploy + initialize + verification all succeed.
