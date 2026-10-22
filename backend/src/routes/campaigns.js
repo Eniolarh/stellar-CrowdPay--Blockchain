@@ -479,6 +479,9 @@ router.get('/:id', asyncHandler(async (req, res) => {
   }
   
   let userRole = null;
+  // Cumulative amount the authenticated caller has already contributed to this
+  // campaign (enforced via campaign.max_per_user). 0 for anonymous callers.
+  let userContributedAmount = 0;
 
   const header = req.headers.authorization;
   if (header && header.startsWith('Bearer ')) {
@@ -501,6 +504,22 @@ router.get('/:id', asyncHandler(async (req, res) => {
               userRole = memberRows[0].role;
             }
           }
+
+          // Return the caller's cumulative contribution for this campaign so the
+          // frontend can enforce the per-contributor cap from an authoritative total
+          // instead of summing a (possibly truncated) contributions list client-side.
+          const { rows: callerWalletRows } = await db.query(
+            'SELECT wallet_public_key FROM users WHERE id = $1',
+            [payload.userId]
+          );
+          const callerWalletPublicKey = callerWalletRows[0]?.wallet_public_key;
+          if (callerWalletPublicKey) {
+            const { rows: callerContributionRows } = await db.query(
+              `SELECT COALESCE(SUM(amount), 0) AS total FROM contributions WHERE campaign_id = $1 AND sender_public_key = $2`,
+              [req.params.id, callerWalletPublicKey]
+            );
+            userContributedAmount = Number(callerContributionRows[0]?.total ?? 0);
+          }
         }
       } catch (err) {
         // Ignore invalid token for public route
@@ -509,7 +528,7 @@ router.get('/:id', asyncHandler(async (req, res) => {
   }
 
   // Add notice if campaign is suspended
-  const response = { ...campaign, user_role: userRole };
+  const response = { ...campaign, user_role: userRole, user_contributed_amount: userContributedAmount };
   if (campaign.status === 'suspended') {
     response.suspended_notice = 'This campaign has been suspended and cannot receive new contributions';
   }
