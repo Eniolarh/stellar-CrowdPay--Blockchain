@@ -458,6 +458,45 @@ test('GET /api/campaigns/:id is read-only and does not mutate status', async () 
   assert.equal(refreshCalled, false, 'GET must never trigger refreshCampaignStatus write side-effects');
 });
 
+test('GET /api/campaigns/:id returns the caller contributed total for the per-user cap', async () => {
+  const jwt = require('jsonwebtoken');
+  const token = jwt.sign({ userId: 'user-1' }, process.env.JWT_SECRET || 'test-secret-for-unit-tests');
+  const app = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('SELECT *,') ) {
+        return {
+          rows: [
+            {
+              id: 'c4a96b7d-6dc2-48ec-b12d-d602cb11b987',
+              creator_id: 'creator-1',
+              title: 'Per User Cap Test',
+              status: 'active',
+              target_amount: '100',
+              raised_amount: '10',
+              asset_type: 'XLM',
+              max_per_user: '50',
+            },
+          ],
+        };
+      }
+      if (text.includes('SELECT wallet_public_key FROM users')) {
+        return { rows: [{ wallet_public_key: 'GUSER' }] };
+      }
+      if (text.includes('COALESCE(SUM(amount)')) {
+        return { rows: [{ total: '30' }] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app)
+    .get('/api/campaigns/c4a96b7d-6dc2-48ec-b12d-d602cb11b987')
+    .set('Authorization', `Bearer ${token}`);
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.user_contributed_amount, 30);
+});
+
 test('POST /api/campaigns/:id/refresh-status allows authorized creator or admin', async () => {
   let refreshCalled = false;
   const app = buildApp({
